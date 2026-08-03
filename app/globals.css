@@ -1,0 +1,1119 @@
+/* The --* custom properties for both themes are generated from lib/theme.ts and
+   emitted into <head> by app/layout.tsx, so the Stripe Payment Element (which
+   renders cross-origin and can't read CSS variables) builds its `appearance`
+   object from the same literals. Edit colours there, not here. */
+
+/* Non-variabilized colors that must flip with the theme. */
+[data-theme="dark"] input::placeholder,
+[data-theme="dark"] textarea::placeholder {
+  color: #8a7168;
+}
+[data-theme="dark"] .preset-chip:hover:not(:disabled) {
+  background: #3d2b33;
+}
+[data-theme="dark"] .method-btn.active {
+  background: linear-gradient(135deg, #3a2831, var(--surface-2));
+}
+[data-theme="dark"] .preview-card {
+  background: linear-gradient(135deg, var(--surface-2), #3a2731);
+}
+[data-theme="dark"] .preview-body {
+  background: rgba(255, 255, 255, 0.06);
+}
+[data-theme="dark"] .remembered-tag {
+  color: #a9c48d;
+  background: rgba(147, 172, 120, 0.16);
+}
+/* Soften the heavy pink drop-shadow against the dark surface. */
+[data-theme="dark"] .card {
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.07);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+}
+
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--sakura-deep) transparent;
+}
+html::-webkit-scrollbar {
+  width: 9px;
+}
+html::-webkit-scrollbar-track {
+  background: transparent;
+}
+html::-webkit-scrollbar-thumb {
+  background: var(--sakura-deep);
+  border-radius: 999px;
+}
+
+body {
+  position: relative;
+  min-height: 100vh;
+  background: radial-gradient(circle at 50% 0%, var(--bg-edge), var(--bg) 70%);
+  color: var(--text);
+  font-family: var(--font-body);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px 48px;
+  overflow-x: hidden;
+}
+
+/* drifting sakura petals — ambient, behind the card */
+.petals {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+.petal {
+  position: absolute;
+  top: -5%;
+  opacity: 0.55;
+  animation: drift linear infinite;
+}
+.petal svg {
+  display: block;
+}
+@keyframes drift {
+  0% {
+    transform: translate(0, -10vh) rotate(0deg);
+  }
+  100% {
+    transform: translate(var(--drift-x, 40px), 110vh) rotate(340deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .petal {
+    animation: none;
+    top: 6%;
+    opacity: 0.35;
+  }
+}
+
+.lang-toggle {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 2;
+  display: flex;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px;
+  box-shadow: 0 6px 16px rgba(199, 111, 137, 0.18);
+}
+
+.lang-toggle button {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 12px;
+  border: none;
+  background: none;
+  box-shadow: none;
+  color: var(--muted);
+  padding: 6px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  width: auto;
+}
+
+.lang-toggle button.active {
+  background: var(--accent-solid);
+  color: #fff;
+}
+
+.theme-toggle {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 2;
+}
+
+.theme-toggle button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--sakura-deep);
+  box-shadow: 0 6px 16px rgba(199, 111, 137, 0.18);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+[data-theme="dark"] .theme-toggle button {
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+.theme-toggle button:hover:not(:disabled) {
+  opacity: 1;
+  border-color: var(--sakura);
+}
+
+.page {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.card {
+  background: var(--surface);
+  border: none;
+  border-radius: 22px;
+  padding: 30px 28px;
+  box-shadow: 0 18px 40px rgba(199, 111, 137, 0.1);
+}
+
+.branch {
+  display: block;
+  margin: 0 auto 14px;
+}
+
+.eyebrow {
+  text-align: center;
+  font-family: var(--font-display);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-size: 11px;
+  color: var(--sakura-deep);
+  margin: 0 0 6px;
+}
+
+h1 {
+  text-align: center;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 27px;
+  margin: 0 0 4px;
+  color: var(--text);
+}
+
+.subtitle {
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+  margin: 0 0 26px;
+  line-height: 1.55;
+}
+
+label {
+  display: block;
+  font-size: 13px;
+  color: var(--sakura-deep);
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.field {
+  margin-bottom: 18px;
+}
+
+.field-hint {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin: 6px 1px 0;
+  line-height: 1.5;
+}
+
+.amount-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.preset-chip {
+  /* scallop radius — controls the size of the biscuit/petal bumps */
+  --r: 6px;
+  flex: 1 1 0;
+  min-width: 54px;
+  width: auto;
+  padding: 9px 11px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 13.3px;
+  color: var(--sakura-deep);
+  background: var(--surface-2);
+  border: none;
+  box-shadow: none;
+  cursor: pointer;
+  filter: drop-shadow(0 1px 1.5px rgba(199, 111, 137, 0.3));
+  transition: background 0.15s ease, color 0.15s ease, filter 0.15s ease;
+  /* biscuit / flower-petal scalloped edge — bumps on all four sides.
+     Inner block (inset by r) unioned with a row of circles along each edge. */
+  --_edge: #000 98%, #0000 100%;
+  -webkit-mask:
+    linear-gradient(#000 0 0) center / calc(100% - 2 * var(--r)) calc(100% - 2 * var(--r)) no-repeat,
+    radial-gradient(var(--r) at 50% var(--r), var(--_edge)) 0 0 / calc(2 * var(--r)) 100% repeat-x,
+    radial-gradient(var(--r) at 50% calc(100% - var(--r)), var(--_edge)) 0 100% / calc(2 * var(--r)) 100% repeat-x,
+    radial-gradient(var(--r) at var(--r) 50%, var(--_edge)) 0 0 / 100% calc(2 * var(--r)) repeat-y,
+    radial-gradient(var(--r) at calc(100% - var(--r)) 50%, var(--_edge)) 100% 0 / 100% calc(2 * var(--r)) repeat-y;
+  mask:
+    linear-gradient(#000 0 0) center / calc(100% - 2 * var(--r)) calc(100% - 2 * var(--r)) no-repeat,
+    radial-gradient(var(--r) at 50% var(--r), var(--_edge)) 0 0 / calc(2 * var(--r)) 100% repeat-x,
+    radial-gradient(var(--r) at 50% calc(100% - var(--r)), var(--_edge)) 0 100% / calc(2 * var(--r)) 100% repeat-x,
+    radial-gradient(var(--r) at var(--r) 50%, var(--_edge)) 0 0 / 100% calc(2 * var(--r)) repeat-y,
+    radial-gradient(var(--r) at calc(100% - var(--r)) 50%, var(--_edge)) 100% 0 / 100% calc(2 * var(--r)) repeat-y;
+}
+
+.preset-chip:hover:not(:disabled) {
+  background: #fbe0e8;
+  filter: drop-shadow(0 1px 3px rgba(199, 111, 137, 0.45));
+  opacity: 1;
+}
+
+.preset-chip.active {
+  background: var(--accent-grad);
+  color: #fff;
+}
+
+.preset-chip.active:hover:not(:disabled) {
+  background: var(--accent-grad);
+  filter: drop-shadow(0 1px 3px rgba(199, 111, 137, 0.5));
+}
+
+/* ── Currency picker paired with the amount input ── */
+.amount-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.currency-select {
+  flex: 0 0 auto;
+  width: auto;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 11px 10px;
+  color: var(--sakura-deep);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+.currency-select:focus {
+  border-color: var(--sakura-deep);
+}
+/* Needs the [type] qualifier to outrank the base input rule further down. */
+.amount-row input[type="text"] {
+  flex: 1 1 auto;
+  font-family: var(--font-display);
+}
+.foreign-tag-wrap {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.foreign-tag {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--sakura-deep);
+  white-space: nowrap;
+}
+.error-hint {
+  color: var(--danger);
+  font-weight: 500;
+}
+
+/* ── Payment method selector ── */
+.remembered-tag {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #5f7d3f;
+  background: rgba(147, 172, 120, 0.2);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.method-toggle {
+  display: flex;
+  gap: 8px;
+}
+.method-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: auto;
+  padding: 12px 8px;
+  border-radius: 14px;
+  border: 1.5px solid transparent;
+  background: var(--surface-2);
+  box-shadow: none;
+  color: var(--sakura-deep);
+  font-family: var(--font-display);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.method-icon {
+  color: var(--muted);
+  transition: color 0.15s ease;
+}
+.method-title {
+  font-weight: 700;
+  font-size: 13px;
+}
+.method-sub {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.method-btn.active {
+  border-color: var(--sakura-deep);
+  background: linear-gradient(135deg, #fff, var(--surface-2));
+}
+.method-btn.active .method-icon,
+.method-btn.active .method-title {
+  color: var(--sakura-deep);
+}
+.method-btn:hover:not(:disabled) {
+  opacity: 1;
+  border-color: var(--sakura);
+}
+.method-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.method-hint {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin: 8px 1px 0;
+}
+
+/* ── Stripe Payment Element wrapper ── */
+.card-form {
+  margin-top: 4px;
+}
+.card-form .back-link {
+  margin-top: 6px;
+}
+
+.label-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 6px;
+}
+
+.label-row label {
+  margin-bottom: 0;
+}
+
+.hint-tooltip-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-bottom: -1px;
+}
+
+.hint-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  padding: 0;
+  background: none;
+  border: none;
+  box-shadow: none;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 0;
+}
+
+.hint-icon-btn:hover:not(:disabled) {
+  color: var(--sakura-deep);
+  opacity: 1;
+}
+
+.hint-tooltip {
+  position: absolute;
+  z-index: 3;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 240px;
+  background: var(--surface);
+  border: 1.5px solid var(--surface-2);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  padding: 10px 16px;
+  border-radius: 999px;
+}
+
+/* Keep this list in step with the :focus rule below. Any input type missing
+   here falls back to the browser's default chrome and sticks out badly next to
+   its neighbours — which is exactly what happened when the admin password and
+   dashboard search fields were added. */
+input[type="text"],
+input[type="number"],
+input[type="email"],
+input[type="password"],
+input[type="search"],
+textarea {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 11px 13px;
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 15px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #c9b3ac;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus,
+input[type="search"]:focus,
+textarea:focus {
+  border-color: var(--sakura-deep);
+}
+
+/* Safari paints a magnifier and its own clear button inside search fields,
+   which breaks the shared padding and rounded corners. */
+input[type="search"] {
+  -webkit-appearance: none;
+  appearance: none;
+}
+input[type="search"]::-webkit-search-decoration,
+input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 72px;
+  max-height: 140px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--sakura-deep) transparent;
+}
+
+textarea::-webkit-scrollbar {
+  width: 8px;
+}
+textarea::-webkit-scrollbar-track {
+  background: transparent;
+}
+textarea::-webkit-scrollbar-thumb {
+  background: var(--sakura-deep);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.char-count {
+  text-align: right;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.anon-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -10px 0 18px;
+}
+
+.anon-row input {
+  width: 15px;
+  height: 15px;
+}
+
+/* Custom checkboxes — unchecked is a rounded, outlined box that reads cleanly
+   on both the light cream and the dark plum; checked fills with the accent and
+   reveals a white tick. */
+.anon-row input[type="checkbox"],
+.checkbox-row input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  flex-shrink: 0;
+  display: inline-grid;
+  place-content: center;
+  border: 1.5px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.anon-row input[type="checkbox"]::before,
+.checkbox-row input[type="checkbox"]::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  transform: scale(0);
+  transition: transform 0.12s ease;
+  background: #fff;
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+}
+
+.anon-row input[type="checkbox"]:checked,
+.checkbox-row input[type="checkbox"]:checked {
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+}
+
+.anon-row input[type="checkbox"]:checked::before,
+.checkbox-row input[type="checkbox"]:checked::before {
+  transform: scale(1);
+}
+
+.anon-row input[type="checkbox"]:hover:not(:checked),
+.checkbox-row input[type="checkbox"]:hover:not(:checked) {
+  border-color: var(--sakura);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anon-row input[type="checkbox"]::before,
+  .checkbox-row input[type="checkbox"]::before {
+    transition: none;
+  }
+}
+
+.anon-row label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+.clear-saved {
+  margin-left: auto;
+  width: auto;
+  padding: 2px 4px;
+  background: none;
+  box-shadow: none;
+  border: none;
+  color: var(--sakura-deep);
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  text-decoration: underline;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.clear-saved:hover:not(:disabled) {
+  opacity: 0.8;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 22px;
+}
+
+.checkbox-row input {
+  width: 17px;
+  height: 17px;
+}
+
+.checkbox-row label {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.checkbox-row .hint-tooltip-wrap {
+  margin-left: -4px;
+}
+
+button {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+  width: 100%;
+  padding: 14px;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  background: var(--accent-grad);
+  color: #fff;
+  box-shadow: var(--btn-shadow);
+  transition: opacity 0.15s ease, transform 0.05s ease;
+}
+
+button:hover:not(:disabled) {
+  opacity: 0.92;
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.99);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--sakura-deep);
+  outline-offset: 2px;
+}
+
+.error-text {
+  color: var(--danger);
+  font-size: 13px;
+  margin: -10px 0 16px;
+}
+
+.qr-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.qr-frame {
+  background: #ffffff;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+}
+
+.qr-frame img {
+  display: block;
+  width: 220px;
+  height: 220px;
+}
+
+.qr-amount {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 23px;
+  color: var(--sakura-deep);
+  margin: 18px 0 4px;
+}
+
+.qr-help {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0 0 10px;
+}
+
+.qr-help a {
+  color: var(--sakura-deep);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.qr-title {
+  font-size: 33px;
+  margin-bottom: 14px;
+}
+
+/* ── QR "waiting for payment" live indicator ── */
+.waiting-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 6px;
+}
+.waiting-dots {
+  display: inline-flex;
+  gap: 4px;
+}
+.waiting-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--sakura-deep);
+  animation: waiting-pulse 1.2s ease-in-out infinite;
+}
+.waiting-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.waiting-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes waiting-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.waiting-text {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--sakura-deep);
+}
+.qr-autodetect {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0 0 6px;
+  max-width: 260px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .waiting-dots span {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+
+.timer {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  font-size: 13px;
+  margin: 8px 0 18px;
+  transition: color 0.3s ease;
+}
+
+.timer.urgent {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+/* ── Success on-stream preview card ── */
+.preview-block {
+  width: 100%;
+  margin: 6px 0 22px;
+}
+.preview-label {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sakura-deep);
+  margin: 0 0 10px;
+}
+.preview-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 14px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, var(--surface-2), #fbe4ea);
+  border: 1px solid var(--border);
+}
+.preview-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 16px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgba(199, 111, 137, 0.15);
+}
+.preview-from {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.preview-name {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--sakura-deep);
+}
+.preview-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.6);
+}
+.preview-flower {
+  font-size: 30px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.preview-inner {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+.preview-amount {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--sakura-deep);
+  margin: 0;
+}
+.preview-amount span {
+  font-size: 12px;
+  font-weight: 600;
+}
+.preview-msg {
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ── Success celebratory petal burst ── */
+.burst-petal {
+  position: fixed;
+  pointer-events: none;
+  z-index: 3;
+  opacity: 0;
+  animation: burst-drift linear forwards;
+}
+.burst-petal svg {
+  display: block;
+  filter: drop-shadow(0 1px 3px rgba(199, 111, 137, 0.4));
+}
+@keyframes burst-drift {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) rotate(0deg) scale(1);
+  }
+  10% {
+    opacity: 0.9;
+  }
+  90% {
+    opacity: 0.5;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--tx), var(--ty)) rotate(var(--tr)) scale(0.6);
+  }
+}
+
+.status-icon {
+  margin-bottom: 12px;
+}
+
+.back-link {
+  background: none;
+  color: var(--muted);
+  font-family: var(--font-body);
+  font-weight: 400;
+  font-size: 13px;
+  text-decoration: underline;
+  box-shadow: none;
+  padding: 6px;
+  width: auto;
+}
+
+.footer-note {
+  text-align: center;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+  padding: 0 8px;
+}
+
+/* ── Supporters panel ──────────────────────────────────────────────────────
+   Self-contained, like the dashboard's styling: its own classes, all via the
+   existing var(--…) tokens so light/dark just works with no overrides here. */
+
+.stage {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 800px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 24px;
+}
+
+.supporters-panel {
+  flex: 1 1 300px;
+  max-width: 320px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: var(--surface);
+  border-radius: 22px;
+  padding: 22px 20px;
+  box-shadow: 0 18px 40px rgba(199, 111, 137, 0.1);
+}
+
+.supporters-count {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--sakura-deep);
+  text-align: center;
+}
+
+.supporters-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+
+.timeframe-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.timeframe-switcher button {
+  font-family: var(--font-body);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--muted);
+  box-shadow: none;
+  width: auto;
+}
+
+.timeframe-switcher button.active {
+  background: var(--accent-solid);
+  border-color: transparent;
+  color: #fff;
+}
+
+.podium {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 14px;
+  padding: 8px 0 4px;
+}
+
+.podium-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.podium-rank {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--sakura-deep);
+}
+
+.podium-name {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+  max-width: 76px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.supporters-empty {
+  font-size: 12.5px;
+  color: var(--muted);
+  text-align: center;
+  padding: 8px 0;
+}
+
+.recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.recent-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.recent-phrase {
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.supporter-avatar {
+  flex-shrink: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: #fff;
+  object-fit: cover;
+}
+
+.supporter-avatar-anon {
+  background: var(--surface-2);
+}
+
+/* The app's first width-based breakpoint: below this, the supporters panel
+   stacks under the tip card instead of sitting beside it. */
+@media (max-width: 820px) {
+  .stage {
+    flex-direction: column;
+    align-items: center;
+  }
+  .supporters-panel {
+    max-width: 440px;
+    width: 100%;
+  }
+}

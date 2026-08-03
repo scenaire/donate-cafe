@@ -1,0 +1,57 @@
+name: CI
+
+# Runs the same gates used during development on every push to master and on
+# every PR. All four are secret-free: lib/stripe.ts and lib/supabase.ts construct
+# their clients lazily behind a Proxy, so `next build` collects page data without
+# any Stripe/Supabase keys. That is why no secrets are configured here.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# A newer push to the same branch/PR cancels an in-flight run — no point spending
+# minutes on a commit that's already been superseded.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Next 16 requires Node >= 20.9. 22 matches local dev; keep this in sync
+          # with the Node version configured for the Vercel project.
+          node-version: "22"
+          cache: npm
+
+      # `npm ci` installs exactly what package-lock.json pins, including the
+      # overrides block that patches postcss/sharp inside Next's tree.
+      - run: npm ci
+
+      # Fast checks first so the run fails quickly on the common breakages.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      # Slowest, but the one that proves the app actually compiles on Turbopack.
+      - name: Build
+        run: npm run build
+
+      # Advisory only: surfaces production-tree vulnerabilities without blocking
+      # a merge when a new CVE drops in a dependency you can't immediately fix.
+      # The dev-only vitest/vite chain is excluded (--omit=dev) since it never
+      # ships. Drop `continue-on-error` if you'd rather gate merges on this.
+      - name: Audit (production deps)
+        run: npm audit --omit=dev --audit-level=high
+        continue-on-error: true
