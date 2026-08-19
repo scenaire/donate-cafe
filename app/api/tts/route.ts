@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isValidWidgetToken } from "@/lib/widget-token";
 
 // Only these ever reach the outbound URL. `lang` used to be interpolated raw,
 // so a value like `th&client=x` could append arbitrary query params to the
@@ -7,8 +8,7 @@ const LANGS = new Set(["th", "en"]);
 
 export async function GET(req: NextRequest) {
   const token = req.nextUrl.searchParams.get("token");
-  const expected = process.env.ALERT_WIDGET_TOKEN;
-  if (!expected || token !== expected) {
+  if (!(await isValidWidgetToken(token))) {
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
 

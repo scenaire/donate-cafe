@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { isCurrency, type Currency } from "@/lib/money";
+import { isValidWidgetToken } from "@/lib/widget-token";
+import { computeGoalSummary } from "@/lib/goal";
+import { DEFAULT_JAR_CONFIG, type JarConfig } from "@/lib/cafe";
 
-// Tip goal + running totals.
+// Tip goal + running totals + the goal-bar overlay's own style/code config.
 //
 // This is the endpoint that most justified the database. Computing it against
 // Stripe meant paginating every succeeded PaymentIntent on each overlay
@@ -14,33 +17,33 @@ import { isCurrency, type Currency } from "@/lib/money";
 // one is worse than an app that doesn't try. Other currencies are reported
 // separately under `totals` so nothing is hidden, just not conflated.
 //
-// Token-gated with ALERT_WIDGET_TOKEN so a goal bar can be its own OBS Browser
-// Source without a login.
+// Token-gated with the widget token so a goal bar can be its own OBS Browser
+// Source without a login. This was already built with that in mind before the
+// goal-bar overlay panel existed — it's the goal-bar's data endpoint now,
+// jarConfig included, rather than a separate near-duplicate route.
 export async function GET(req: NextRequest) {
   const token = req.nextUrl.searchParams.get("token");
-  const expected = process.env.ALERT_WIDGET_TOKEN;
-  if (!expected || token !== expected) {
+  if (!(await isValidWidgetToken(token))) {
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
 
-  const { data: goal, error: goalError } = await supabase
-    .from("goals")
-    .select("id, label, target_minor, currency, starts_at")
-    .eq("is_active", true)
-    .maybeSingle();
-
-  if (goalError) {
-    console.error("Failed to load goal", goalError.message);
-    return NextResponse.json({ error: "Could not fetch summary." }, { status: 500 });
-  }
+  const [summary, jarRes] = await Promise.all([
+    computeGoalSummary(),
+    supabase.from("cafe_settings").select("jar_config").eq("id", true).maybeSingle(),
+  ]);
+  const jarConfig: JarConfig = { ...DEFAULT_JAR_CONFIG, ...(jarRes.data?.jar_config as Partial<JarConfig> | undefined) };
 
   // Everything since the goal started, or the last 24h when no goal is set.
-  const since = goal?.starts_at ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  // computeGoalSummary() doesn't expose starts_at (callers don't need the raw
+  // timestamp), so this endpoint's own `totals` breakdown re-derives its window
+  // the same way — a fresh RPC call, not reusing the goal's raised figure,
+  // since totals cover every currency, not just the goal's own.
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
   // Aggregated in Postgres via SUM/GROUP BY rather than paging every SUCCESS
-  // row since the goal started and reducing in JS — see supabase/schema.sql's
-  // sum_succeeded_orders_since for why (this is the endpoint whose own header
-  // above warns against exactly that O(n) shape).
+  // row and reducing in JS — see supabase/schema.sql's sum_succeeded_orders_since
+  // for why (this is the endpoint whose own header above warns against exactly
+  // that O(n) shape).
   const { data, error } = await supabase.rpc("sum_succeeded_orders_since", { since_ts: since });
 
   if (error) {
@@ -54,19 +57,18 @@ export async function GET(req: NextRequest) {
     totals[row.currency] = { amountMinor: Number(row.amount_minor), count: Number(row.cnt) };
   }
 
-  const raised = goal ? totals[goal.currency as Currency]?.amountMinor ?? 0 : 0;
-
   return NextResponse.json({
     since,
     totals,
-    goal: goal
+    jarConfig,
+    goal: summary
       ? {
-          label: goal.label,
-          currency: goal.currency,
-          targetMinor: goal.target_minor,
-          raisedMinor: raised,
-          // Clamped so an overfunded goal doesn't render a bar past 100%.
-          progress: Math.min(1, goal.target_minor > 0 ? raised / goal.target_minor : 0),
+          label: summary.label,
+          currency: summary.currency,
+          targetMinor: summary.targetMinor,
+          raisedMinor: summary.raisedMinor,
+          progress: summary.progress,
+          showOnOverlay: summary.showOnOverlay,
         }
       : null,
   });

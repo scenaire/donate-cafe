@@ -1,5 +1,4 @@
 import { CURRENCIES, isCurrency, type Currency } from "./money";
-import { maskProfanity } from "./profanity";
 
 // Strips HTML tags and collapses whitespace. Not a full sanitizer — good
 // enough for "never let raw HTML reach Stripe metadata", which is all we
@@ -22,6 +21,7 @@ export type ValidatedOrder = {
   message: string;
   showOnScreen: boolean;
   email: string; // required for PromptPay; may be "" for card (collected client-side)
+  itemId: string | null; // selected treat's menu_items.id, if any — null on a custom amount
 };
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -29,11 +29,10 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export function validateOrderInput(body: unknown): { ok: true; data: ValidatedOrder } | { ok: false; error: string } {
   const b = (body ?? {}) as Record<string, unknown>;
 
-  // Mask before clamping — clamping first could cut a word mid-mask and leave a
-  // stray run of asterisks, or worse, truncate a term back below the blocklist
-  // match. Both text fields go to the overlay and TTS, so both get filtered.
+  // Content moderation (masking/holding/blocking flagged words) happens later,
+  // in lib/moderation.ts — this chokepoint only sanitizes and clamps.
   const rawName = typeof b.name === "string" ? b.name : "";
-  const name = clampString(maskProfanity(stripHtml(rawName)), 30) || "Anonymous";
+  const name = clampString(stripHtml(rawName), 30) || "Anonymous";
 
   // Currency first — it governs the amount range and the allowed method.
   const currency: Currency = isCurrency(b.currency) ? b.currency : "thb";
@@ -53,7 +52,7 @@ export function validateOrderInput(body: unknown): { ok: true; data: ValidatedOr
   const amount = cfg.decimals === 0 ? Math.round(amountNum) : Math.round(amountNum * 100) / 100;
 
   const rawMessage = typeof b.message === "string" ? b.message : "";
-  const message = clampString(maskProfanity(stripHtml(rawMessage)), 250);
+  const message = clampString(stripHtml(rawMessage), 250);
 
   const showOnScreen = b.showOnScreen !== false; // default true
 
@@ -74,5 +73,12 @@ export function validateOrderInput(body: unknown): { ok: true; data: ValidatedOr
     email = rawEmail;
   }
 
-  return { ok: true, data: { name, amount, currency, method, message, showOnScreen, email } };
+  // Looked up server-side against menu_items; an unrecognized or stale id just
+  // means no item snapshot gets attached, not a validation failure — a treat
+  // that was deleted between page-load and checkout shouldn't block payment.
+  const rawItemId = typeof b.itemId === "string" ? b.itemId : "";
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const itemId = UUID_RE.test(rawItemId) ? rawItemId : null;
+
+  return { ok: true, data: { name, amount, currency, method, message, showOnScreen, email, itemId } };
 }

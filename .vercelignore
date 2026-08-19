@@ -1,0 +1,37 @@
+# Upload filter for `vercel` / `vercel deploy` from the terminal.
+#
+# IMPORTANT: when this file exists the CLI uses it INSTEAD of .gitignore, not
+# in addition to it. Anything that must stay out of a deploy has to be listed
+# here even if .gitignore already covers it — .env.local especially.
+
+# Never upload
+node_modules
+.next
+.vercel
+.env
+.env.local
+*.log
+
+# Local tooling — no effect on the build, just bundle weight and upload time.
+.git
+.github
+.claude
+.mcp.json
+.ignore
+graft/
+tsconfig.tsbuildinfo
+
+# Docs and specs — read by humans and by Claude Code, not by Next.
+docs
+CLAUDE.md
+PRODUCT.md
+README.md
+cspell.json
+
+# Tests and their config never run on Vercel; `next build` is the only gate.
+**/*.test.ts
+**/*.test.tsx
+vitest.config.ts
+
+# Schema is applied by hand in the Supabase SQL editor, not at deploy time.
+supabase

@@ -1,15 +1,20 @@
-// Single source of truth for the colour palette.
+// Single source of truth for the colour palette + design tokens.
 //
-// These values used to live in two places: the `:root` / `[data-theme="dark"]`
-// blocks in globals.css, and a hand-copied duplicate inside the Stripe
-// `appearance` objects in app/page.tsx (which carried a "keep in sync" comment
-// — the usual sign that nothing will). The Stripe Payment Element renders in a
-// cross-origin iframe and cannot read our CSS custom properties, so it genuinely
-// needs the literal values; the fix is to make TypeScript the origin and have
-// the CSS variables be generated from here instead of the other way round.
+// The pixel/retro-cozy "Whispering Rain Café" system. There is ONE fixed look
+// (no dark mode): the design commits to a single palette. Values live here in
+// TypeScript because the Stripe Payment Element renders in a cross-origin iframe
+// that cannot read our CSS custom properties, so it needs the literal values;
+// making TypeScript the origin keeps the CSS variables and the Stripe
+// `appearance` object from drifting apart.
 //
-// app/layout.tsx emits `themeCss()` into <head>; globals.css consumes the
-// resulting var(--x) references exactly as before.
+// app/layout.tsx emits themeCss() into <head>; app/globals.css and every
+// component consume the resulting var(--x) references.
+//
+// The `Palette` shape below is retained (same field names) so existing
+// consumers — stripeAppearance() in app/page.tsx and the legacy var(--sakura*)
+// references in globals.css — keep compiling while the UI is rebuilt on top of
+// the richer pixel token set added in themeCss(). Prefer the pixel tokens
+// (--ink, --pink, --card, …) in new code.
 
 export type Palette = {
   bg: string;
@@ -28,58 +33,94 @@ export type Palette = {
   btnShadow: string;
 };
 
+// The one café palette, mapped onto the legacy Palette field names.
+//  sakura      → pink primary (#F4A9BD)
+//  sakuraDeep  → primary border / ink (#9E4B54)
+//  surface     → card cream (#FDF5E4)   surface2 → well (#EEDCBE)
 export const LIGHT: Palette = {
-  bg: "#fbf1ed",
-  bgEdge: "#f6e1db",
-  surface: "#fffcfa",
-  surface2: "#fdeeea",
-  sakura: "#e8a0b4",
-  sakuraDeep: "#c76f89",
-  matcha: "#93ac78",
-  text: "#4a372f",
-  muted: "#ab8d83",
-  border: "rgba(199, 111, 137, 0.28)",
-  danger: "#c4685f",
-  accentGrad: "linear-gradient(135deg, var(--sakura), var(--sakura-deep))",
-  accentSolid: "#c76f89",
-  btnShadow: "0 8px 20px rgba(199, 111, 137, 0.35)",
+  bg: "#5F3A40",
+  bgEdge: "#5F3A40",
+  surface: "#FDF5E4",
+  surface2: "#EEDCBE",
+  sakura: "#F4A9BD",
+  sakuraDeep: "#9E4B54",
+  matcha: "#C9A24B",
+  text: "#6B4535",
+  muted: "#8E6B5B",
+  border: "#DBB79A",
+  danger: "#C4646F",
+  accentGrad: "repeating-linear-gradient(90deg,#F4A9BD 0 10px,#F0A0B5 10px 20px)",
+  accentSolid: "#9E4B54",
+  btnShadow: "0 6px 0 #9E4B54",
 };
 
-// Warm plum off-black surfaces, sakura/matcha accents lifted in lightness so
-// pink text and labels keep WCAG AA contrast on dark.
-export const DARK: Palette = {
-  bg: "#1e1518",
-  bgEdge: "#2a1c22",
-  surface: "#271b20",
-  surface2: "#31232a",
-  sakura: "#eaa7ba",
-  sakuraDeep: "#e991a8",
-  matcha: "#a9c48d",
-  text: "#f4e7e3",
-  muted: "#b89a91",
-  border: "rgba(233, 145, 168, 0.26)",
-  danger: "#e5867d",
-  // Filled interactive surfaces use a deeper rose so they sit calmly on the
-  // dark plum and keep white label text readable (the lifted accents above are
-  // for text/icons — too light to fill a button with).
-  accentGrad: "linear-gradient(135deg, #b8637d, #984a63)",
-  accentSolid: "#a8506a",
-  btnShadow: "0 8px 20px rgba(0, 0, 0, 0.4)",
+// No dark mode in this design. DARK is kept identical to LIGHT so any lingering
+// consumer of the dark path (or a stale data-theme="dark" attribute) renders the
+// one intended look instead of a broken half-palette. Removed entirely once the
+// last dark-mode reference (ThemeToggle / providers) is deleted in the page rewrite.
+export const DARK: Palette = LIGHT;
+
+// Literal family stacks fed to the cross-origin Stripe iframe (which can't
+// resolve our CSS variables) and used as the last-resort fallback in the
+// variable stacks below.
+export const FONT_DISPLAY = `"DotGothic16", "IBM Plex Sans Thai Looped", sans-serif`;
+export const FONT_LABEL = `"Silkscreen", "DotGothic16", monospace`;
+export const FONT_BODY = `"IBM Plex Sans Thai Looped", "Noto Sans Thai", sans-serif`;
+
+// The next/font variables set on <html> in app/layout.tsx. The variable names
+// here MUST match the ones declared there.
+const DISPLAY_VAR_STACK = `var(--font-dotgothic), ${FONT_DISPLAY}`;
+const LABEL_VAR_STACK = `var(--font-silkscreen), ${FONT_LABEL}`;
+const BODY_VAR_STACK = `var(--font-plex-thai), ${FONT_BODY}`;
+
+// ── Pixel design tokens ─────────────────────────────────────────────────────
+// The full handoff palette, exposed as CSS custom properties for new components.
+// Grouped by role; hard offset shadows only (no blurred elevation).
+const PIXEL_TOKENS: Record<string, string> = {
+  // surfaces
+  "--page": "#5F3A40",
+  "--card": "#FDF5E4",
+  "--paper": "#FFFBF2",
+  // ink
+  "--ink": "#9E4B54",
+  "--deep-ink": "#7A3F49",
+  "--body-text": "#6B4535",
+  "--muted-text": "#8E6B5B",
+  "--label-text": "#9A6656",
+  "--faint-label": "#B07B6A",
+  "--faint-label-2": "#C0A08F",
+  "--disabled-fg": "#A98876",
+  "--button-ink": "#6B2F3A",
+  // pinks
+  "--pink": "#FDD3E0",
+  "--pink-a": "#F4A9BD",
+  "--pink-b": "#F0A0B5",
+  "--pink-deep": "#EE93AB",
+  // borders / wells
+  "--soft-border": "#DBB79A",
+  "--secondary-border": "#C4818F",
+  "--well": "#EEDCBE",
+  "--well-2": "#E7D2B0",
+  "--well-3": "#F7E7CB",
+  "--well-4": "#F1E2C8",
+  "--dashed-rule": "#D8C3AC",
+  // error
+  "--error-border": "#C4646F",
+  "--error-bg": "#FBDCDF",
+  "--error-text": "#8C3742",
+  // accents
+  "--accent-purple": "#C9A2D6",
+  "--accent-purple-2": "#B98FC8",
+  "--gold": "#C9A24B",
+  // light-on-dark
+  "--on-dark": "#F2D9C6",
+  "--on-dark-2": "#FDF5E4",
+  // striped CTA fill + hard button shadow
+  "--cta-fill": "repeating-linear-gradient(90deg,#F4A9BD 0 10px,#F0A0B5 10px 20px)",
+  "--btn-shadow-1": "0 3px 0 #9E4B54",
+  "--btn-shadow-2": "0 4px 0 #9E4B54",
+  "--btn-shadow-3": "0 6px 0 #9E4B54",
 };
-
-// Literal family stacks. The Stripe Payment Element renders in a cross-origin
-// iframe that can't resolve our CSS variables, so app/page.tsx feeds it
-// FONT_BODY verbatim. Both also serve as the last-resort fallback inside the
-// CSS-variable stacks below.
-export const FONT_DISPLAY = `"Quicksand", "Noto Sans Thai", sans-serif`;
-export const FONT_BODY = `"Noto Sans Thai", "Noto Sans", sans-serif`;
-
-// What the app's own DOM actually renders in: the self-hosted next/font
-// families, referenced through the CSS variables app/layout.tsx sets from
-// next/font (.variable). If a variable is ever unset — e.g. a route that
-// doesn't apply the font classNames — the literal stacks above take over.
-const DISPLAY_VAR_STACK = `var(--font-quicksand), var(--font-noto-thai), ${FONT_DISPLAY}`;
-const BODY_VAR_STACK = `var(--font-noto-thai), var(--font-noto-sans), ${FONT_BODY}`;
 
 function vars(p: Palette): string {
   return [
@@ -100,10 +141,17 @@ function vars(p: Palette): string {
   ].join(";");
 }
 
-// Emitted into <head> ahead of globals.css's consumers.
+function pixelVars(): string {
+  return Object.entries(PIXEL_TOKENS)
+    .map(([k, v]) => `${k}:${v}`)
+    .join(";");
+}
+
+// Emitted into <head> ahead of globals.css's consumers. One palette, no dark
+// block — the design is a single fixed look.
 export function themeCss(): string {
   return (
-    `:root{${vars(LIGHT)};--font-display:${DISPLAY_VAR_STACK};--font-body:${BODY_VAR_STACK}}` +
-    `[data-theme="dark"]{${vars(DARK)}}`
+    `:root{${vars(LIGHT)};${pixelVars()};` +
+    `--font-display:${DISPLAY_VAR_STACK};--font-label:${LABEL_VAR_STACK};--font-body:${BODY_VAR_STACK}}`
   );
 }

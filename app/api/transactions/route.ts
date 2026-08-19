@@ -1,69 +1,50 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/supabase-server";
 import { supabase, type OrderRow } from "@/lib/supabase";
+import { applyTxFilter, parseTxFilter } from "@/lib/tx-filter";
 
-const PAGE_SIZE = 100;
-const STATUSES = new Set(["PENDING", "SUCCESS", "EXPIRED", "FAILED"]);
+const PAGE_SIZE = 12;
 
-// Admin transaction list. Now reads the DB behind a Supabase Auth session
-// instead of paging Stripe behind a URL token.
+// Admin transaction list. Reads the DB behind a Supabase Auth session.
 //
-// Two things got simpler in the move:
-//
-//  * Search and status filtering are WHERE clauses over the whole table. The
-//    Stripe version could only filter rows a cursor had already fetched, so you
-//    could not find a tip that wasn't on screen yet.
-//  * Pagination is a plain created_at keyset. Stripe's `starting_after` had to
-//    be taken from the raw page rather than the filtered list, or whole pages of
-//    filtered-out rows would stall the cursor — a subtlety that no longer exists.
+// Numbered (offset) pagination with an exact total, so the dashboard can render a
+// classic prev/1/2/next pager. Search and the filter are WHERE clauses over the
+// whole table (not just the current page).
 export async function GET(req: NextRequest) {
   const auth = await requireAdmin();
   if (!auth.ok) return auth.response;
 
   const params = req.nextUrl.searchParams;
-  const before = params.get("before"); // ISO timestamp keyset cursor
-  const status = params.get("status");
+  const filter = parseTxFilter(params.get("filter"));
   const q = params.get("q")?.trim() ?? "";
+  const page = Math.max(1, Number(params.get("page") ?? "1") || 1);
+  const from = (page - 1) * PAGE_SIZE;
 
-  let query = supabase
-    .from("orders")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .limit(PAGE_SIZE + 1); // one extra row tells us whether more exist
-
-  if (before) {
-    const asDate = new Date(before);
-    if (Number.isNaN(asDate.getTime())) {
-      return NextResponse.json({ error: "Invalid cursor." }, { status: 400 });
-    }
-    query = query.lt("created_at", asDate.toISOString());
-  }
-
-  if (status && STATUSES.has(status)) {
-    query = query.eq("status", status);
-  }
+  let query = applyTxFilter(
+    supabase
+      .from("orders")
+      .select("*", { count: "exact" })
+      .order("created_at", { ascending: false })
+      .range(from, from + PAGE_SIZE - 1),
+    filter
+  );
 
   if (q) {
     // Escape PostgREST's or() delimiters so a comma or paren in the search box
     // can't break out of the filter expression.
     const safe = q.replace(/[,()\\]/g, " ").slice(0, 100);
-    if (safe.trim()) {
-      query = query.or(`customer_name.ilike.%${safe}%,message.ilike.%${safe}%`);
-    }
+    if (safe.trim()) query = query.or(`customer_name.ilike.%${safe}%,message.ilike.%${safe}%`);
   }
 
-  const { data, error } = await query;
+  const { data, error, count } = await query;
   if (error) {
     console.error("Failed to list orders", error.message);
     return NextResponse.json({ error: "Could not fetch transactions." }, { status: 500 });
   }
 
-  const rows = (data ?? []) as OrderRow[];
-  const hasMore = rows.length > PAGE_SIZE;
-  const page = hasMore ? rows.slice(0, PAGE_SIZE) : rows;
-
+  const total = count ?? 0;
   return NextResponse.json({
-    transactions: page.map((o) => ({
+    transactions: ((data ?? []) as OrderRow[]).map((o) => ({
       id: o.payment_intent_id,
       createdAt: Math.floor(new Date(o.created_at).getTime() / 1000),
       name: o.customer_name,
@@ -74,7 +55,9 @@ export async function GET(req: NextRequest) {
       status: o.status,
       alertPlayedAt: o.alert_played_at,
     })),
-    hasMore,
-    nextCursor: page.length ? page[page.length - 1].created_at : null,
+    page,
+    pageSize: PAGE_SIZE,
+    total,
+    pageCount: Math.max(1, Math.ceil(total / PAGE_SIZE)),
   });
 }

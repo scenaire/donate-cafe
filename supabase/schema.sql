@@ -37,6 +37,24 @@ create table if not exists public.orders (
   thb_equivalent_minor bigint,
   fx_rate_to_thb       numeric(18,8),
   fx_source            text check (fx_source is null or fx_source in ('identity','cache','seed','repair')),
+  -- Moderation verdict, stamped at creation by lib/moderation.ts. 'approved' is
+  -- the default so a tip with the queue switched off flows straight through;
+  -- 'held' parks it for the Privacy panel's approve/reject queue and keeps it
+  -- out of BOTH the alerts query and publishAlert; 'blocked' never surfaces.
+  -- tts_ok is separate because a name can be safe to show but not to read
+  -- aloud -- masking one does not imply masking the other.
+  moderation_status text        not null default 'approved'
+                      check (moderation_status in ('approved','held','blocked')),
+  tts_ok            boolean     not null default true,
+  moderation_reason text,
+  moderation_word   text,
+  -- Menu item snapshot, frozen at order time. Denormalised on purpose: the
+  -- receipt, the alert and the dashboard must keep showing what was actually
+  -- ordered even after the item is renamed, repriced or deleted from
+  -- menu_items. NULL for a free-amount tip that picked no item.
+  item_th           text,
+  item_en           text,
+  item_photo_url    text,
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now()
 );
@@ -50,6 +68,17 @@ alter table public.orders add column if not exists fx_source            text;
 alter table public.orders drop constraint if exists orders_fx_source_check;
 alter table public.orders add constraint orders_fx_source_check
   check (fx_source is null or fx_source in ('identity','cache','seed','repair'));
+
+alter table public.orders add column if not exists moderation_status text not null default 'approved';
+alter table public.orders add column if not exists tts_ok            boolean not null default true;
+alter table public.orders add column if not exists moderation_reason text;
+alter table public.orders add column if not exists moderation_word   text;
+alter table public.orders add column if not exists item_th           text;
+alter table public.orders add column if not exists item_en           text;
+alter table public.orders add column if not exists item_photo_url    text;
+alter table public.orders drop constraint if exists orders_moderation_status_check;
+alter table public.orders add constraint orders_moderation_status_check
+  check (moderation_status in ('approved','held','blocked'));
 
 -- The reconciliation query: "succeeded, visible, not yet announced".
 create index if not exists orders_pending_alerts_idx
@@ -69,6 +98,12 @@ create index if not exists orders_created_at_idx
 create index if not exists orders_fx_missing_idx
   on public.orders (created_at)
   where thb_equivalent_minor is null;
+
+-- The Privacy panel's hold queue: "what is waiting on me right now". Partial,
+-- so it stays near-empty in steady state.
+create index if not exists orders_moderation_held_idx
+  on public.orders (created_at)
+  where moderation_status = 'held';
 
 -- ── processed_stripe_events ───────────────────────────────────────────────
 -- Stripe retries webhook deliveries for up to 3 days. Without this, a retry
@@ -92,8 +127,29 @@ create table if not exists public.goals (
   -- can be "today" or "this stream" without deleting history.
   starts_at      timestamptz not null default now(),
   is_active      boolean     not null default true,
-  created_at     timestamptz not null default now()
+  created_at     timestamptz not null default now(),
+  -- Optional end date (Bangkok calendar day). Reaching it triggers `ending`,
+  -- evaluated lazily on the next /api/goal read rather than by a scheduled
+  -- job: 'raise' bumps the target and keeps going, 'hold' freezes the bar at
+  -- 100%, 'hide' retires the goal. See lib/goal.ts.
+  deadline         date,
+  ending           text    not null default 'hold'
+                     check (ending in ('raise','hold','hide')),
+  -- Where this goal may appear. Independent: a goal can drive the tip page
+  -- counter while staying off the stream overlay.
+  show_on_counter  boolean not null default true,
+  show_on_overlay  boolean not null default false,
+  show_on_share    boolean not null default true
 );
+
+alter table public.goals add column if not exists deadline        date;
+alter table public.goals add column if not exists ending          text not null default 'hold';
+alter table public.goals add column if not exists show_on_counter boolean not null default true;
+alter table public.goals add column if not exists show_on_overlay boolean not null default false;
+alter table public.goals add column if not exists show_on_share   boolean not null default true;
+alter table public.goals drop constraint if exists goals_ending_check;
+alter table public.goals add constraint goals_ending_check
+  check (ending in ('raise','hold','hide'));
 
 -- At most one active goal — the overlay has room for exactly one.
 create unique index if not exists goals_single_active_idx
@@ -308,6 +364,106 @@ create trigger orders_touch_updated_at
   before update on public.orders
   for each row execute function public.touch_updated_at();
 
+-- ── cafe_settings ──────────────────────────────────────
+-- Everything the /settings panels own, in ONE row -- the same single-row idiom
+-- as sweep_state (id boolean primary key check (id)). The JSONB columns are
+-- blobs on purpose: each is read and written whole by a single panel and never
+-- queried by key, so giving every field its own column would mean a migration
+-- each time a panel grows one.
+--
+-- widget_token is the OBS widget secret. It lived in an ALERT_WIDGET_TOKEN env
+-- var until rotating it meant a redeploy; it is a column now so the Alerts
+-- panel can regenerate it live (see lib/widget-token.ts).
+create table if not exists public.cafe_settings (
+  id                 boolean primary key default true check (id),
+  name               text    not null,
+  flower_of_month    text    not null,
+  widget_token       text,
+  -- Voice panel: idle lines with their trigger conditions, plus the two
+  -- templates that build what the guest hears on a successful order.
+  idle_lines         jsonb   not null default '[]'::jsonb,
+  pick_template      jsonb   not null default '{"th": "รับ{{item}} {{amount}} นะคะ~ เดี๋ยวแนร์ชงให้เลยค่ะ ♡ {{line}}", "en": "One {{item}}, {{amount}} -- I''ll brew it right away ♡ {{line}}"}'::jsonb,
+  thanks_template    jsonb   not null default '{"th": "ขอบคุณ{{name}}มากเลยค่ะ ♡ {{item}}ชิ้นนี้แนร์จะกินตอนสตรีมรอบหน้านะคะ", "en": "Thank you so much, {{name}} ♡ I''m saving this {{item}} for next stream."}'::jsonb,
+  real_voice_on      boolean not null default true,
+  -- Cafe panel: emotion portraits and time-of-day backdrops, as
+  -- {key: public storage URL} maps into the cafe-assets bucket below.
+  emotion_images     jsonb   not null default '{}'::jsonb,
+  scene_images       jsonb   not null default '{}'::jsonb,
+  -- NULL = follow the clock/season; a value pins the backdrop for a stream.
+  current_weather    text    check (current_weather is null or current_weather in ('rain','clear','hot')),
+  -- Privacy panel: the hold-then-approve rules lib/moderation.ts evaluates.
+  privacy            jsonb   not null default '{"actions": {"tts": "mask", "name": "mask", "message": "mask"}, "queueOn": true, "holdRules": {"caps": false, "long": false, "links": false, "repeat": false, "firstTime": false}, "allowWords": [], "blockWords": [], "strictness": "standard", "anonDefault": false, "sealedAllowed": true}'::jsonb,
+  -- Alerts and Goal bar overlay panels: preset or CODE-mode HTML/CSS/JS plus
+  -- the style knobs. Rendered sandboxed -- see app/alert and app/goal-overlay.
+  alert_config       jsonb   not null default '{"js": "", "css": "", "html": "", "mode": "simple", "ttsOn": true, "preset": null, "soundOn": true, "durationSec": 7, "spawnGapSec": 3, "minAmountThb": 0}'::jsonb,
+  jar_config         jsonb   not null default '{"js": "", "css": "", "fill": "pink", "html": "", "mode": "simple", "align": "left", "preset": null, "backing": "cream", "showPct": false, "texture": "stripe", "heightPx": 20, "showName": true, "showAmount": true}'::jsonb,
+  -- THB threshold above which a tip is read aloud. Lives here rather than in
+  -- alert_config because the Voice panel and the alert widget both read it.
+  tts_threshold_thb  integer not null default 500 check (tts_threshold_thb > 0)
+);
+
+-- Same idempotent-alter idiom as orders: CREATE TABLE IF NOT EXISTS is a no-op
+-- against a database that already has the table, so panels added after the
+-- first install land their columns here.
+alter table public.cafe_settings add column if not exists current_weather text;
+alter table public.cafe_settings add column if not exists widget_token    text;
+alter table public.cafe_settings add column if not exists real_voice_on   boolean not null default true;
+alter table public.cafe_settings add column if not exists alert_config    jsonb   not null default '{}'::jsonb;
+alter table public.cafe_settings add column if not exists jar_config      jsonb   not null default '{}'::jsonb;
+
+-- The one row. Placeholder cafe name and flower -- set them in /settings.
+-- The widget token is random per install: shipping a fixed one in a file that
+-- lives in git would hand every reader of the repo the alert channel.
+insert into public.cafe_settings (id, name, flower_of_month, widget_token)
+values (true, 'My Cafe', 'Jasmine', encode(gen_random_bytes(32), 'hex'))
+on conflict (id) do nothing;
+
+-- Backfill for an install predating the column, then the NOT NULL that could
+-- only be applied once every row had a value.
+update public.cafe_settings
+   set widget_token = encode(gen_random_bytes(32), 'hex')
+ where widget_token is null;
+alter table public.cafe_settings alter column widget_token set not null;
+
+-- ── menu_items ─────────────────────────────────────────
+-- The tip page's orderable items. THB-only prices: the menu is priced in the
+-- cafe's home currency and converted for display, never stored per-currency.
+--
+-- Deliberately NOT joined to orders. An order snapshots the item's text and
+-- photo into its own columns (item_th / item_en / item_photo_url above), so
+-- deleting an item here can never rewrite what a past receipt says. That is
+-- why there is no foreign key.
+--
+-- Seeded empty -- add items in /settings -> Menu. `hidden` retires an item
+-- while keeping past orders readable; sort_order is the drag-and-drop
+-- position; tails are the per-item voice lines the Voice panel edits.
+create table if not exists public.menu_items (
+  id          uuid    primary key default gen_random_uuid(),
+  th          text    not null,
+  en          text    not null,
+  price_thb   integer not null check (price_thb > 0),
+  hidden      boolean not null default false,
+  sort_order  integer not null default 0,
+  tails       jsonb   not null default '[]'::jsonb,
+  tags        text[]  not null default '{}'::text[],
+  thumb_url   text
+);
+
+alter table public.menu_items add column if not exists tails     jsonb  not null default '[]'::jsonb;
+alter table public.menu_items add column if not exists tags      text[] not null default '{}'::text[];
+alter table public.menu_items add column if not exists thumb_url text;
+
+-- ── storage ─────────────────────────────────────────────
+-- Menu photos, emotion portraits and scene backdrops uploaded from /settings.
+-- PUBLIC on purpose: these are decorations rendered by the tip page and by the
+-- OBS overlays, both of which load them as plain <img> URLs with no session,
+-- and the bucket holds nothing private. Uploads go through
+-- /api/settings/upload, which is session-gated -- "public" means readable
+-- here, not writable.
+insert into storage.buckets (id, name, public)
+values ('cafe-assets', 'cafe-assets', true)
+on conflict (id) do nothing;
+
 -- ── Row Level Security ────────────────────────────────────────────────────
 -- Enabled with no policies: anon and authenticated get nothing. Server routes
 -- use the service-role key, which bypasses RLS entirely.
@@ -318,6 +474,8 @@ alter table public.sweep_state             enable row level security;
 alter table public.rate_limits             enable row level security;
 alter table public.fx_rates                enable row level security;
 alter table public.fx_refresh_state        enable row level security;
+alter table public.cafe_settings           enable row level security;
+alter table public.menu_items              enable row level security;
 
 -- Realtime is NOT enabled on these tables on purpose. postgres_changes enforces
 -- RLS, so exposing alerts that way would mean granting anon read access to the

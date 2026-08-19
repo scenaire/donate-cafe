@@ -16,10 +16,14 @@ type CurrencyConfig = {
 };
 
 export const CURRENCIES: Record<Currency, CurrencyConfig> = {
+  // `min` is a server-side floor at Stripe's per-currency minimum charge; the tip
+  // page enforces its own (higher) minimum = the cheapest treat's price converted
+  // (see MIN_TIP_THB in app/page.tsx), so these just guard against sub-floor custom
+  // amounts. USD 0.50 / JPY 50 are Stripe's absolute minimums.
   thb: { symbol: "฿", decimals: 2, min: 20, max: 50000, presets: [20, 50, 100, 300, 500], label: "THB", spoken: { th: "บาท", en: "baht" } },
-  usd: { symbol: "$", decimals: 2, min: 1, max: 1500, presets: [1, 3, 5, 10, 20], label: "USD", spoken: { th: "ดอลลาร์", en: "dollars" } },
-  eur: { symbol: "€", decimals: 2, min: 1, max: 1500, presets: [1, 3, 5, 10, 20], label: "EUR", spoken: { th: "ยูโร", en: "euros" } },
-  jpy: { symbol: "¥", decimals: 0, min: 100, max: 200000, presets: [100, 300, 500, 1000, 3000], label: "JPY", spoken: { th: "เยน", en: "yen" } },
+  usd: { symbol: "$", decimals: 2, min: 0.5, max: 1500, presets: [1, 3, 5, 10, 20], label: "USD", spoken: { th: "ดอลลาร์", en: "dollars" } },
+  eur: { symbol: "€", decimals: 2, min: 0.5, max: 1500, presets: [1, 3, 5, 10, 20], label: "EUR", spoken: { th: "ยูโร", en: "euros" } },
+  jpy: { symbol: "¥", decimals: 0, min: 50, max: 200000, presets: [100, 300, 500, 1000, 3000], label: "JPY", spoken: { th: "เยน", en: "yen" } },
 };
 
 // Display order in the picker — THB first (home currency).

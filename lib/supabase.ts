@@ -49,6 +49,7 @@ export const supabase = new Proxy({} as SupabaseClient, {
 });
 
 export type OrderStatus = "PENDING" | "SUCCESS" | "EXPIRED" | "FAILED";
+export type OrderModerationStatus = "approved" | "held" | "blocked";
 
 export type OrderRow = {
   id: string;
@@ -67,6 +68,17 @@ export type OrderRow = {
   fx_source: "identity" | "cache" | "seed" | "repair" | null;
   created_at: string;
   updated_at: string;
+  // Set once at order creation by lib/moderation.ts. Gates the alert pipeline
+  // (see publishAlert in lib/realtime.ts) — held/blocked tips still succeed as
+  // payments, they just never reach the overlay until approved.
+  moderation_status: OrderModerationStatus;
+  tts_ok: boolean;
+  moderation_reason: string | null;
+  moderation_word: string | null;
+  // Treat snapshot at submit time — see create-payment-intent's loadItemSnapshot.
+  item_th: string | null;
+  item_en: string | null;
+  item_photo_url: string | null;
 };
 
 // Stripe's PaymentIntent statuses mapped onto our four-state machine. Stripe is

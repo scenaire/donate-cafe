@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase, type OrderRow } from "@/lib/supabase";
 import { alertPayloadFromOrder } from "@/lib/realtime";
+import { isValidWidgetToken } from "@/lib/widget-token";
 
 // Reconciliation feed for the OBS widget: every succeeded, visible tip that has
 // not been announced yet.
@@ -13,8 +14,7 @@ import { alertPayloadFromOrder } from "@/lib/realtime";
 // a burst exceeds a page limit.
 export async function GET(req: NextRequest) {
   const token = req.nextUrl.searchParams.get("token");
-  const expected = process.env.ALERT_WIDGET_TOKEN;
-  if (!expected || token !== expected) {
+  if (!(await isValidWidgetToken(token))) {
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
 
@@ -23,6 +23,11 @@ export async function GET(req: NextRequest) {
     .select("*")
     .eq("status", "SUCCESS")
     .eq("show_on_screen", true)
+    // Held/blocked tips stay off the reconciliation feed too — otherwise the
+    // widget's 30s poll would surface them the moment publishAlert's initial
+    // gate (lib/realtime.ts) skips the broadcast. Approving one in the queue
+    // flips this to 'approved' and calls publishAlert itself.
+    .eq("moderation_status", "approved")
     .is("alert_played_at", null)
     // Oldest first so a backlog plays in the order the tips arrived.
     .order("created_at", { ascending: true })

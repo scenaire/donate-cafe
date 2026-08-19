@@ -5,6 +5,7 @@ import { validateOrderInput } from "@/lib/validate";
 import { toMinorUnits, type Currency } from "@/lib/money";
 import { clientKeyFromForwarded } from "@/lib/ratelimit";
 import { snapshotThb, type FxSnapshot } from "@/lib/fx";
+import { loadPrivacyConfig, isFirstTimeSupporter, evaluateModeration, type ModerationStatus } from "@/lib/moderation";
 
 // Public endpoint that hits Stripe and writes an orders row on every call —
 // PromptPay uses confirm: true, so an unthrottled script can flood the table
@@ -44,6 +45,13 @@ async function recordOrder(row: {
   currency: Currency;
   show_on_screen: boolean;
   snapshot: FxSnapshot;
+  moderation_status: ModerationStatus;
+  tts_ok: boolean;
+  moderation_reason: string | null;
+  moderation_word: string | null;
+  item_th: string | null;
+  item_en: string | null;
+  item_photo_url: string | null;
 }) {
   const { snapshot, ...rest } = row;
   const { error } = await supabase.from("orders").upsert(
@@ -58,6 +66,16 @@ async function recordOrder(row: {
     { onConflict: "payment_intent_id", ignoreDuplicates: true }
   );
   if (error) console.error("Failed to record order", row.payment_intent_id, error.message);
+}
+
+// Snapshotted at submit time so a later Menu edit or delete can't change what
+// an already-fired alert showed — the alert's {{item}}/{{photo}} tokens read
+// from the order row, never live from menu_items.
+async function loadItemSnapshot(itemId: string | null): Promise<{ item_th: string | null; item_en: string | null; item_photo_url: string | null }> {
+  if (!itemId) return { item_th: null, item_en: null, item_photo_url: null };
+  const { data } = await supabase.from("menu_items").select("th, en, thumb_url").eq("id", itemId).maybeSingle();
+  if (!data) return { item_th: null, item_en: null, item_photo_url: null };
+  return { item_th: data.th as string, item_en: data.en as string, item_photo_url: (data.thumb_url as string | null) ?? null };
 }
 
 export async function POST(req: NextRequest) {
@@ -93,7 +111,18 @@ export async function POST(req: NextRequest) {
   if (!validated.ok) {
     return NextResponse.json({ error: validated.error }, { status: 400 });
   }
-  const { name, amount, currency, method, message, showOnScreen, email } = validated.data;
+  const { name: rawName, amount, currency, method, message: rawMessage, showOnScreen, email, itemId } = validated.data;
+
+  // Content moderation runs once here, before either payment branch, so both
+  // Stripe metadata and the recorded order agree on the same (possibly
+  // masked) text and the same held/blocked decision.
+  const [privacyConfig, firstTime, itemSnapshot] = await Promise.all([
+    loadPrivacyConfig(),
+    isFirstTimeSupporter(rawName),
+    loadItemSnapshot(itemId),
+  ]);
+  const moderation = evaluateModeration({ name: rawName, message: rawMessage, isFirstTimeSupporter: firstTime }, privacyConfig);
+  const { name, message } = moderation;
 
   const idempotency = idempotencyOptions(body);
   const amountMinor = toMinorUnits(amount, currency);
@@ -136,6 +165,11 @@ export async function POST(req: NextRequest) {
         currency,
         show_on_screen: showOnScreen,
         snapshot,
+        moderation_status: moderation.status,
+        tts_ok: moderation.ttsOk,
+        moderation_reason: moderation.reason,
+        moderation_word: moderation.word,
+        ...itemSnapshot,
       });
 
       return NextResponse.json({
@@ -173,6 +207,11 @@ export async function POST(req: NextRequest) {
       currency,
       show_on_screen: showOnScreen,
       snapshot,
+      moderation_status: moderation.status,
+      tts_ok: moderation.ttsOk,
+      moderation_reason: moderation.reason,
+      moderation_word: moderation.word,
+      ...itemSnapshot,
     });
 
     const qr = intent.next_action?.promptpay_display_qr_code;

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { isValidWidgetToken } from "@/lib/widget-token";
 
 // The fix for the alert-replay bug.
 //
@@ -13,9 +14,8 @@ import { supabase } from "@/lib/supabase";
 // The widget calls this after an alert has finished playing, not when it starts:
 // if OBS dies mid-animation we would rather replay one tip than silently eat it.
 export async function POST(req: NextRequest) {
-  const expected = process.env.ALERT_WIDGET_TOKEN;
   const token = req.nextUrl.searchParams.get("token");
-  if (!expected || token !== expected) {
+  if (!(await isValidWidgetToken(token))) {
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
 

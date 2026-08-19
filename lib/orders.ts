@@ -10,7 +10,7 @@
 // then writing would double-announce tips on stream.
 
 import { supabase, type OrderRow, type OrderStatus } from "./supabase";
-import { publishAlert } from "./realtime";
+import { publishAlert, publishGoalUpdate } from "./realtime";
 
 // Statuses a tip may be promoted from. SUCCESS is excluded so a replayed
 // webhook is a no-op; FAILED is excluded because it needs a human decision
@@ -47,6 +47,7 @@ export async function promoteToSuccess(paymentIntentId: string): Promise<Promote
 
   const order = data as OrderRow;
   await publishAlert(order);
+  await publishGoalUpdate();
   return { transitioned: true, order };
 }
 
@@ -68,7 +69,52 @@ export async function forceSuccess(paymentIntentId: string): Promise<PromoteResu
 
   const order = data as OrderRow;
   await publishAlert(order);
+  await publishGoalUpdate();
   return { transitioned: true, order };
+}
+
+// Privacy & moderation queue actions. Unlike promoteToSuccess/forceSuccess,
+// these don't touch `status` at all — a held order may still be PENDING (not
+// yet paid) or already SUCCESS (paid before the creator got to the queue).
+// Only `moderation_status` moves; if the order already succeeded, approving
+// fires the alert now since publishAlert withheld it the first time.
+export async function approveModerated(paymentIntentId: string): Promise<PromoteResult> {
+  const { data, error } = await supabase
+    .from("orders")
+    .update({ moderation_status: "approved" })
+    .eq("payment_intent_id", paymentIntentId)
+    .eq("moderation_status", "held")
+    .select()
+    .maybeSingle();
+
+  if (error || !data) {
+    if (error) console.error("approveModerated failed", paymentIntentId, error.message);
+    return { transitioned: false, reason: "not_found" };
+  }
+
+  const order = data as OrderRow;
+  if (order.status === "SUCCESS") await publishAlert(order);
+  return { transitioned: true, order };
+}
+
+// Held → blocked. Permanent — there is no "unblock" action; a mistaken block
+// is fixed by hand, the same way a mistaken delete anywhere else in this
+// codebase is.
+export async function blockModerated(paymentIntentId: string): Promise<PromoteResult> {
+  const { data, error } = await supabase
+    .from("orders")
+    .update({ moderation_status: "blocked" })
+    .eq("payment_intent_id", paymentIntentId)
+    .eq("moderation_status", "held")
+    .select()
+    .maybeSingle();
+
+  if (error || !data) {
+    if (error) console.error("blockModerated failed", paymentIntentId, error.message);
+    return { transitioned: false, reason: "not_found" };
+  }
+
+  return { transitioned: true, order: data as OrderRow };
 }
 
 // PENDING/EXPIRED → FAILED, for a canceled Stripe intent. No publishAlert —

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import Stripe from "stripe";
 import { stripe } from "@/lib/stripe";
 import { supabase, statusFromStripe } from "@/lib/supabase";
 import { promoteToSuccess } from "@/lib/orders";
@@ -116,6 +117,15 @@ async function stripeFallback(id: string) {
     const intent = await stripe.paymentIntents.retrieve(id);
     return NextResponse.json({ status: statusFromStripe(intent.status) });
   } catch (err) {
+    // An id neither we nor Stripe recognise (a bogus/garbage id, or a malformed
+    // one) is not a server error — we simply have no record of this order. Answer
+    // PENDING, matching the throttled and not-yet-old fallbacks above; the payer's
+    // own 10-minute countdown ends the flow. A real pre-cutover intent WOULD be
+    // found here, so this only affects ids that never existed. A genuine Stripe
+    // outage (any other error type) still surfaces as 500 so the client retries.
+    if (err instanceof Stripe.errors.StripeInvalidRequestError) {
+      return NextResponse.json({ status: "PENDING" });
+    }
     console.error("Failed to retrieve PaymentIntent", err);
     return NextResponse.json({ error: "Could not check status." }, { status: 500 });
   }

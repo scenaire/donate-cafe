@@ -15,7 +15,7 @@ function isTimeframe(x: string | null): x is Timeframe {
   return TIMEFRAMES.includes(x as Timeframe);
 }
 
-const RECENT_LIMIT = 5;
+const RECENT_LIMIT = 12; // strip shows 3; guest-book modal shows the rest
 const TOP_LIMIT = 3;
 const CACHE_SECONDS = 45;
 const STALE_SECONDS = 60;
@@ -132,11 +132,17 @@ export async function GET(req: NextRequest) {
     // Already summed on the stored THB snapshot and ranked in SQL — see
     // top_supporters_since in supabase/schema.sql. No FX folding here.
     supabase.rpc("top_supporters_since", { since_ts: since, limit_n: TOP_LIMIT }),
+    // `message` is masked at write time for the 'mask' outcome (lib/moderation.ts)
+    // and only show_on_screen (non-private), moderation-approved rows are
+    // returned, so exposing the note here is safe — held/blocked rows keep
+    // their raw, unmasked text for the Privacy queue and must never reach a
+    // public route. See the supporter-privacy decision in the SRS.
     supabase
       .from("orders")
-      .select("customer_name, amount_minor, currency, created_at")
+      .select("customer_name, amount_minor, currency, created_at, message")
       .eq("status", "SUCCESS")
       .eq("show_on_screen", true)
+      .eq("moderation_status", "approved")
       .order("created_at", { ascending: false })
       .limit(RECENT_LIMIT),
     supabase
@@ -166,6 +172,7 @@ export async function GET(req: NextRequest) {
     amount_minor: number;
     currency: string;
     created_at: string;
+    message: string | null;
   }[])
     .filter((row) => isCurrency(row.currency))
     .map((row) => ({
@@ -173,6 +180,7 @@ export async function GET(req: NextRequest) {
       amountMinor: row.amount_minor,
       currency: row.currency,
       createdAt: row.created_at,
+      note: row.message ?? "",
     }));
 
   const body = {

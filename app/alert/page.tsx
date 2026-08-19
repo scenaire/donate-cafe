@@ -12,6 +12,7 @@ import {
 import { BRAND_NAME } from "@/lib/brand";
 import { supabaseBrowser } from "@/lib/supabase-browser";
 import { ALERT_EVENT, channelName, type AlertPayload } from "@/lib/realtime.shared";
+import { DEFAULT_ALERT_CONFIG, renderAlertTemplate, type AlertConfig, type AlertTokens } from "@/lib/cafe";
 
 type Alert = AlertPayload;
 
@@ -43,23 +44,25 @@ const CAFE_SVGS = [
   `<svg viewBox="0 0 60 60" width="64" height="64" fill="none"><ellipse cx="30" cy="53" rx="10" ry="2" fill="rgb(199, 111, 137)"/><path d="M20 24 L22 52 Q22 54 30 54 Q38 54 38 52 L40 24 Z" fill="rgba(255,248,235,0.88)" stroke="#e7ae75" stroke-width="1"/><ellipse cx="30" cy="24" rx="10" ry="4" fill="#f2c4ce" stroke="#c76f89" stroke-width="1"/><ellipse cx="30" cy="32" rx="9" ry="3" fill="#c5dea8" opacity="0.9"/><ellipse cx="30" cy="40" rx="9" ry="3" fill="#f2c4ce" opacity="0.9"/><ellipse cx="30" cy="47" rx="8" ry="3" fill="#e7ae75" opacity="0.9"/><path d="M27 14 Q30 7 33 14" stroke="#c76f89" stroke-width="1.5" fill="none" stroke-linecap="round"/><circle cx="30" cy="13" r="3" fill="#e8a0b4" stroke="#c76f89"/><circle cx="24" cy="28" r="1.5" fill="rgba(255,255,255,0.7)"/><circle cx="36" cy="36" r="1.5" fill="rgba(255,255,255,0.7)"/></svg>`,
 ];
 
-function playSound(src: string): Promise<void> {
+function playSound(src: string, volume: number): Promise<void> {
   if (typeof window === "undefined") return Promise.resolve();
   return new Promise((resolve) => {
     const audio = new Audio(src);
+    audio.volume = volume;
     audio.onended = () => resolve();
     audio.onerror = () => resolve();
     audio.play().catch(() => resolve());
   });
 }
 
-function speak(text: string, token: string): Promise<void> {
+function speak(text: string, token: string, volume: number): Promise<void> {
   if (!text || typeof window === "undefined") return Promise.resolve();
   const safe = text.slice(0, 180);
   const lang = THAI_RE.test(safe) ? "th" : "en";
   const url = `/api/tts?text=${encodeURIComponent(safe)}&lang=${lang}&token=${encodeURIComponent(token)}`;
   return new Promise((resolve) => {
     const audio = new Audio(url);
+    audio.volume = volume;
     audio.onended = () => resolve();
     audio.onerror = () => resolve();
     audio.play().catch(() => resolve());
@@ -70,12 +73,17 @@ function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ── Widget config, read from the OBS Browser Source URL ────────────────────
-// Lets the streamer retune the overlay without a redeploy. Everything here is
-// presentation-only; nothing config can say will hide a tip from the dashboard.
+// ── Widget config: Settings (database) provides the defaults, the OBS Browser
+// Source URL can still override any of them without a redeploy — kept for
+// power users who want per-currency thresholds the Settings sliders (THB-only)
+// don't cover. Everything here is presentation-only; nothing config can say
+// will hide a tip from the dashboard.
 type WidgetConfig = {
   holdMs: number;
   sound: boolean;
+  ttsOn: boolean;
+  soundVolume: number; // 0-1, applied to both the chime and TTS playback
+  spawnGapMs: number; // pause between one alert closing and the next opening
   minAmount: Partial<Record<Currency, number>>; // major units, per currency
   ttsMin: Partial<Record<Currency, number>>;
   showTests: boolean;
@@ -84,9 +92,24 @@ type WidgetConfig = {
 const DEFAULT_CONFIG: WidgetConfig = {
   holdMs: HOLD_MS,
   sound: true,
+  ttsOn: true,
+  soundVolume: 1,
+  spawnGapMs: 600,
   minAmount: {},
   ttsMin: {},
   showTests: false,
+};
+
+// What the URL explicitly asked for — undefined means "not set", as opposed
+// to WidgetConfig's resolved values, so mergeConfig can tell "URL said off"
+// apart from "URL didn't mention this".
+type UrlOverrides = {
+  holdMs?: number;
+  sound?: boolean;
+  soundVolume?: number;
+  minAmount: Partial<Record<Currency, number>>;
+  ttsMin: Partial<Record<Currency, number>>;
+  showTests: boolean;
 };
 
 // Accepts either a bare number — applied to THB, the home currency — or an
@@ -108,20 +131,52 @@ function parseThresholds(raw: string | null): Partial<Record<Currency, number>> 
   return out;
 }
 
-function parseConfig(search: string): WidgetConfig {
+function parseUrlOverrides(search: string): UrlOverrides {
   const p = new URLSearchParams(search);
   const holdRaw = Number(p.get("holdMs"));
+  // Clamped: a zero or negative hold makes alerts unreadable, and an
+  // unbounded one wedges the queue behind a single tip.
+  const holdMs = Number.isFinite(holdRaw) && holdRaw > 0 ? Math.min(Math.max(holdRaw, 1000), 60000) : undefined;
+  const soundRaw = p.get("sound");
+  const sound = soundRaw === null ? undefined : soundRaw !== "0" && soundRaw !== "off";
+  const volumeRaw = Number(p.get("volume"));
+  const soundVolume = Number.isFinite(volumeRaw) && p.get("volume") !== null ? Math.min(Math.max(volumeRaw / 100, 0), 1) : undefined;
   return {
-    // Clamped: a zero or negative hold makes alerts unreadable, and an
-    // unbounded one wedges the queue behind a single tip.
-    holdMs: Number.isFinite(holdRaw) && holdRaw > 0 ? Math.min(Math.max(holdRaw, 1000), 60000) : HOLD_MS,
-    sound: p.get("sound") !== "0" && p.get("sound") !== "off",
+    holdMs,
+    sound,
+    soundVolume,
     minAmount: parseThresholds(p.get("minAmount")),
     ttsMin: parseThresholds(p.get("ttsMin")),
     // Off unless asked for: these fire a fully-formed fake alert, and the
     // source sits live in OBS where a stray click lands on stream. Add
     // `&test=1` while positioning the source, then drop it.
     showTests: p.get("test") === "1",
+  };
+}
+
+// Settings (DB) fills in the defaults; anything the URL explicitly set wins.
+// The THB-only minAmount slider becomes the `thb:` entry unless the URL
+// already specifies one — non-THB thresholds stay URL-only.
+//
+// Deliberately does NOT touch ttsMin by default: Google TTS on this overlay
+// reads every alert that clears minAmount aloud, full stop. The tip page's
+// "real voice" threshold (tts_threshold_thb) is a completely different
+// promise — Naire reading it herself, live, above that amount — and never
+// gates this synthesized read-aloud. ttsMin stays URL-only, for a streamer
+// who explicitly wants a *higher* bar for Google TTS specifically.
+function mergeConfig(url: UrlOverrides, db: AlertConfig | null): WidgetConfig {
+  const minAmount = { ...url.minAmount };
+  if (db && db.minAmountThb > 0 && minAmount.thb === undefined) minAmount.thb = db.minAmountThb;
+  const ttsMin = { ...url.ttsMin };
+  return {
+    holdMs: url.holdMs ?? (db ? db.durationSec * 1000 : HOLD_MS),
+    sound: url.sound ?? (db ? db.soundOn : true),
+    ttsOn: db ? db.ttsOn : true,
+    soundVolume: url.soundVolume ?? (db ? Math.min(Math.max(db.soundVolume / 100, 0), 1) : 1),
+    spawnGapMs: db ? db.spawnGapSec * 1000 : 600,
+    minAmount,
+    ttsMin,
+    showTests: url.showTests,
   };
 }
 
@@ -138,6 +193,26 @@ function meetsThreshold(
 
 function randomCafeSvg() {
   return CAFE_SVGS[Math.floor(Math.random() * CAFE_SVGS.length)];
+}
+
+// CODE mode: builds the sandboxed iframe's srcDoc for one alert. The HTML/CSS
+// substitution is escaped (renderAlertTemplate) since it lands in markup; the
+// JS gets the same values raw, via a JSON-serialized `data` object, since it
+// runs as code rather than being interpolated into a string. sandbox=
+// "allow-scripts" with no allow-same-origin keeps the streamer's own custom
+// JS from reaching this page's cookies or DOM — it can only touch the iframe
+// it was given.
+function buildAlertSrcDoc(cfg: AlertConfig, alert: Alert, isThai: boolean): string {
+  const item = (isThai ? alert.itemTh : alert.itemEn) ?? alert.itemTh ?? alert.itemEn ?? "";
+  const amount = formatMoney(alert.amountMinor, isCurrency(alert.currency) ? alert.currency : "thb");
+  const tokens: AlertTokens = { name: alert.name, item, amount, message: alert.message ?? "", photo: alert.photo ?? "" };
+  const html = renderAlertTemplate(cfg.html, tokens);
+  const css = renderAlertTemplate(cfg.css, tokens);
+  // pctNum isn't wired yet — no live goal fetch happens on the alert path
+  // today. The goal bar overlay panel will need this plumbing anyway.
+  const data = { ...tokens, pctNum: 0 };
+  const boot = `<script>window.addEventListener('load',function(){try{var el=document.body.firstElementChild;var data=${JSON.stringify(data)};${cfg.js}}catch(e){}});<\/script>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body>${html}${boot}</body></html>`;
 }
 
 const CSS = `
@@ -288,6 +363,11 @@ export default function AlertWidget() {
   // drives /api/sweep, it took reconciliation tier 3 down with it. OBS's
   // Chromium runs with autoplay allowed, so the gesture bought nothing here.
   const [token, setToken] = useState<string | null>(null);
+  // Drives CODE-mode rendering (mode/preset/html/css/js) — needs to be state
+  // rather than a ref since it's read directly in JSX. The behaviour fields
+  // (duration/minAmount/etc.) fold into configRef instead, which playNext
+  // reads imperatively and never needs a re-render for.
+  const [dbAlertConfig, setDbAlertConfig] = useState<AlertConfig | null>(null);
 
   const queueRef = useRef<Alert[]>([]);
   // In-session guard only. Realtime and the reconciliation poll can both
@@ -299,6 +379,7 @@ export default function AlertWidget() {
   const playingRef = useRef(false);
   const tokenRef = useRef<string>("");
   const configRef = useRef<WidgetConfig>(DEFAULT_CONFIG);
+  const urlOverridesRef = useRef<UrlOverrides>({ minAmount: {}, ttsMin: {}, showTests: false });
 
   // ack/playNext/enqueue/poll are declared here, in dependency order (each
   // only calls things already declared above it), ahead of the effects below
@@ -347,14 +428,20 @@ export default function AlertWidget() {
     setAnimKey((k) => k + 1);
     setCurrent(next);
     const isThai = THAI_RE.test(next.name) || THAI_RE.test(next.message ?? "");
+    // ttsOk=false withholds only the message text — the name + amount still
+    // get read aloud, same as a tip with no message at all.
+    const spokenMessage = next.ttsOk ? (next.message ?? "") : "";
     const spoken = isThai
-      ? `${next.name} ป้อนอาหารน้องแน ${spokenAmount(next.amountMinor, cur, "th")} ${next.message ?? ""}`.trim()
-      : `${next.name} tipped ${spokenAmount(next.amountMinor, cur, "en")}. ${next.message}`.trim();
-    if (cfg.sound) await playSound(CHIME_SRC);
+      ? `${next.name} ป้อนอาหารน้องแน ${spokenAmount(next.amountMinor, cur, "th")} ${spokenMessage}`.trim()
+      : `${next.name} tipped ${spokenAmount(next.amountMinor, cur, "en")}. ${spokenMessage}`.trim();
+    if (cfg.sound) await playSound(CHIME_SRC, cfg.soundVolume);
     // ttsMin is bypassed on a replay for the same reason as minAmount, and one
     // more: replay exists because you want to *hear* a tip again, so a replay
-    // that renders a silent card would miss the point entirely.
-    if (next.replay || meetsThreshold(cfg.ttsMin, next.amountMinor, cur)) await speak(spoken, tokenRef.current);
+    // that renders a silent card would miss the point entirely. ttsOn is a
+    // different kind of control — a blanket "don't read messages aloud"
+    // preference, not an amount filter — so unlike ttsMin, it isn't bypassed
+    // by a replay either.
+    if (cfg.ttsOn && (next.replay || meetsThreshold(cfg.ttsMin, next.amountMinor, cur))) await speak(spoken, tokenRef.current, cfg.soundVolume);
     await wait(cfg.holdMs);
     // Acked only now that it has fully played. Doing it on display would mean a
     // mid-animation crash silently swallowed someone's tip.
@@ -364,7 +451,7 @@ export default function AlertWidget() {
     // also keeps alert_played_at honest as "when this tip first played".
     if (!next.replay) void ack(next.id);
     setCurrent(null);
-    await wait(600);
+    await wait(cfg.spawnGapMs);
     playNext();
   }
 
@@ -382,6 +469,22 @@ export default function AlertWidget() {
     if (!playingRef.current) playNext();
   }
 
+  // Settings edits (behaviour sliders, CODE-mode template) reach an already-
+  // open OBS source the next time this fires — no reload needed. Called once
+  // on mount and again every poll() tick.
+  async function loadAlertConfig() {
+    try {
+      const res = await fetch(`/api/alert-config?token=${encodeURIComponent(tokenRef.current)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const db = { ...DEFAULT_ALERT_CONFIG, ...(data.alertConfig as Partial<AlertConfig>) };
+      configRef.current = mergeConfig(urlOverridesRef.current, db);
+      setDbAlertConfig(db);
+    } catch (err) {
+      console.error("alert-config load failed", err);
+    }
+  }
+
   async function poll() {
     try {
       // No cursor. The server returns every succeeded, visible tip that has not
@@ -394,6 +497,8 @@ export default function AlertWidget() {
     } catch (err) {
       console.error("alert poll failed", err);
     }
+
+    void loadAlertConfig();
 
     // Tier 3 of reconciliation: on Vercel Hobby, cron only fires daily, so the
     // widget being open is what gives PENDING→EXPIRED and late-webhook recovery
@@ -409,8 +514,12 @@ export default function AlertWidget() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     tokenRef.current = params.get("token") || "";
-    configRef.current = parseConfig(window.location.search);
-    setShowTests(configRef.current.showTests);
+    urlOverridesRef.current = parseUrlOverrides(window.location.search);
+    // Resolved again, for real, once loadAlertConfig's first fetch lands —
+    // this is just so playNext has something sane if a tip somehow fires
+    // before that.
+    configRef.current = mergeConfig(urlOverridesRef.current, null);
+    setShowTests(urlOverridesRef.current.showTests);
     setToken(tokenRef.current);
   }, []);
 
@@ -470,8 +579,19 @@ export default function AlertWidget() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  function testAlert(name: string, amountMinor: number, currency: Currency, message: string) {
-    enqueue({ id: `test-${Date.now()}`, createdAt: Math.floor(Date.now() / 1000), name, message, amountMinor, currency });
+  function testAlert(name: string, amountMinor: number, currency: Currency, message: string, itemTh?: string, itemEn?: string) {
+    enqueue({
+      id: `test-${Date.now()}`,
+      createdAt: Math.floor(Date.now() / 1000),
+      name,
+      message,
+      amountMinor,
+      currency,
+      itemTh: itemTh ?? null,
+      itemEn: itemEn ?? null,
+      photo: null,
+      ttsOk: true,
+    });
   }
 
   function spawnPetals(cx: number, cy: number) {
@@ -541,13 +661,13 @@ export default function AlertWidget() {
           display: "flex", gap: 8,
           fontFamily: "var(--font-display)",
         }}>
-          <button onClick={() => testAlert("Hikari", 500, "usd", "Love the cozy vibes 🌸")} style={setupBtnStyle}>
+          <button onClick={() => testAlert("Hikari", 500, "usd", "Love the cozy vibes 🌸", "มัทฉะลาเต้", "Matcha latte")} style={setupBtnStyle}>
             ☕ Test $
           </button>
-          <button onClick={() => testAlert("แนนนี่", 30000, "thb", "สู้ๆนะคะ เป็นกำลังใจให้เสมอ!")} style={setupBtnStyle}>
+          <button onClick={() => testAlert("แนนนี่", 30000, "thb", "สู้ๆนะคะ เป็นกำลังใจให้เสมอ!", "บาสก์ราสป์เบอร์รีพิสตาชิโอ", "Basque raspberry pistachio")} style={setupBtnStyle}>
             🍵 Test ฿
           </button>
-          <button onClick={() => testAlert("ดาบสุดหล่อ", 500, "jpy", "ข้อความทดสอบยาวๆ เพื่อดูว่าการ์ดตัดบรรทัดถูกต้องไหม")} style={setupBtnStyle}>
+          <button onClick={() => testAlert("ดาบสุดหล่อ", 500, "jpy", "ข้อความทดสอบยาวๆ เพื่อดูว่าการ์ดตัดบรรทัดถูกต้องไหม", "ชูครีม", "Choux cream")} style={setupBtnStyle}>
             📝 Test ¥
           </button>
         </div>
@@ -580,13 +700,28 @@ export default function AlertWidget() {
         </div>
       )}
 
-      {/* ── Alert ── */}
+      {/* ── Alert (CODE mode) ── custom streamer-authored markup, sandboxed.
+          Rendered full-viewport since presets position themselves absolutely
+          against the 1920×1080 canvas, unlike SIMPLE mode's bottom-anchored
+          card. Remounted per alert via key={animKey} so each firing gets a
+          fresh `window load` for the preset's own JS. */}
+      {current && dbAlertConfig?.mode === "code" && (
+        <iframe
+          key={animKey}
+          srcDoc={buildAlertSrcDoc(dbAlertConfig, current, THAI_RE.test(current.name) || THAI_RE.test(current.message ?? ""))}
+          sandbox="allow-scripts"
+          title="tip alert"
+          style={{ position: "fixed", inset: 0, width: "100%", height: "100%", border: "none", background: "transparent", pointerEvents: "none" }}
+        />
+      )}
+
+      {/* ── Alert (SIMPLE mode) ── */}
       <div style={{
         position: "fixed", inset: 0,
         display: "flex", alignItems: "flex-end", justifyContent: "center",
         paddingBottom: 44, pointerEvents: "none",
       }}>
-        {current && (
+        {current && dbAlertConfig?.mode !== "code" && (
           <div className="alert-wrap" key={animKey} style={{ animation: "wrap-enter 0.7s cubic-bezier(0.34,1.56,0.64,1) forwards" }}>
             {/* pill */}
             <div className="username-pill">

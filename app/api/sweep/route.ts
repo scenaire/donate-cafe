@@ -9,6 +9,7 @@ import {
   purgeStaleRateLimits,
 } from "@/lib/orders";
 import { refreshRatesIfStale, repairMissingSnapshots } from "@/lib/fx";
+import { isValidWidgetToken } from "@/lib/widget-token";
 
 export const runtime = "nodejs";
 
@@ -36,7 +37,7 @@ const FX_REPAIR_BATCH = 25;
 // Called by two very different callers, which is why the throttle is
 // server-side:
 //
-//   1. The /alert widget, every ~30s while you are live (ALERT_WIDGET_TOKEN).
+//   1. The /alert widget, every ~30s while you are live (widget token).
 //      That is an OBS Browser Source — it can be duplicated across scenes,
 //      reloaded repeatedly, or left running in several windows. It cannot be
 //      trusted to pace itself, and each sweep costs real Stripe API calls.
@@ -56,7 +57,7 @@ async function runSweep(req: NextRequest) {
   const token = req.nextUrl.searchParams.get("token");
   const auth = req.headers.get("authorization");
 
-  const widgetOk = Boolean(process.env.ALERT_WIDGET_TOKEN) && token === process.env.ALERT_WIDGET_TOKEN;
+  const widgetOk = await isValidWidgetToken(token);
   // Vercel Cron sends `Authorization: Bearer $CRON_SECRET`.
   const cronOk = Boolean(process.env.CRON_SECRET) && auth === `Bearer ${process.env.CRON_SECRET}`;
   if (!widgetOk && !cronOk) {

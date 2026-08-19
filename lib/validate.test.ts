@@ -31,12 +31,17 @@ describe("validateOrderInput — amount ranges", () => {
   });
 
   it("enforces USD's own range independently of THB's", () => {
+    // USD 5 is below THB's min (20) yet valid for USD — proves the range is
+    // per-currency, not THB's floor applied everywhere.
     const result = validateOrderInput(
       baseBody({ currency: "usd", method: "card", amount: 5, email: "" })
     );
     expect(result.ok).toBe(true);
+    // Below USD's own Stripe floor (0.50) is rejected. (0.50 itself is valid —
+    // the server floor is Stripe's absolute minimum; the tip page enforces a
+    // higher UX minimum. See CURRENCIES in lib/money.ts.)
     const tooLow = validateOrderInput(
-      baseBody({ currency: "usd", method: "card", amount: 0.5, email: "" })
+      baseBody({ currency: "usd", method: "card", amount: 0.1, email: "" })
     );
     expect(tooLow.ok).toBe(false);
   });
@@ -98,18 +103,23 @@ describe("validateOrderInput — email requirement", () => {
   });
 });
 
-describe("validateOrderInput — profanity mask happens before length clamp", () => {
-  it("masks a blocked word rather than dropping it, and keeps the surrounding text", () => {
+describe("validateOrderInput — sanitize & clamp (masking moved to lib/moderation)", () => {
+  it("does NOT mask flagged words — that responsibility moved to the moderation pipeline", () => {
+    // validateOrderInput only strips HTML and clamps length; content moderation
+    // (masking/holding/blocking) now happens later in evaluateModeration. See
+    // moderation.test.ts for masking coverage and validate.ts:32 for the note.
     const result = validateOrderInput(baseBody({ message: "you fuck are great" }));
     expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.data.message).not.toContain("fuck");
-      expect(result.data.message).toContain("****");
-      expect(result.data.message).toContain("are great");
-    }
+    if (result.ok) expect(result.data.message).toBe("you fuck are great");
   });
 
-  it("clamps message length after masking, so a mask near the boundary is not cut in half", () => {
+  it("strips HTML tags from the message", () => {
+    const result = validateOrderInput(baseBody({ message: "hi <b>there</b>" }));
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.message).toBe("hi there");
+  });
+
+  it("clamps message length to 250", () => {
     const longMessage = "a".repeat(260);
     const result = validateOrderInput(baseBody({ message: longMessage }));
     expect(result.ok).toBe(true);

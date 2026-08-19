@@ -5,7 +5,7 @@
 // The obvious design is to have /alert subscribe to INSERT/UPDATE on `orders`.
 // But postgres_changes enforces Row Level Security, so for the widget to
 // receive names, messages and amounts, the anon role would need read access to
-// exactly the columns ALERT_WIDGET_TOKEN exists to protect — and the anon key
+// exactly the columns the widget token exists to protect — and the anon key
 // is public by design. The v2 SRS asks for both of those things at once and
 // they cannot both hold.
 //
@@ -21,13 +21,15 @@
 
 import { supabase } from "./supabase";
 import type { OrderRow } from "./supabase";
-import { ALERT_EVENT, channelName, type AlertPayload } from "./realtime.shared";
+import { ALERT_EVENT, GOAL_EVENT, channelName, type AlertPayload, type GoalUpdatePayload } from "./realtime.shared";
+import { getWidgetToken } from "./widget-token";
+import { computeGoalSummary } from "./goal";
 
 // Re-exported so server callers have one import site; the definitions live in
 // realtime.shared.ts because the browser widget needs them too and must not
 // reach this module (see that file's header).
-export { ALERT_EVENT, channelName };
-export type { AlertPayload };
+export { ALERT_EVENT, GOAL_EVENT, channelName };
+export type { AlertPayload, GoalUpdatePayload };
 
 export function alertPayloadFromOrder(order: OrderRow): AlertPayload {
   return {
@@ -37,6 +39,10 @@ export function alertPayloadFromOrder(order: OrderRow): AlertPayload {
     message: order.message ?? "",
     amountMinor: order.amount_minor,
     currency: order.currency,
+    itemTh: order.item_th,
+    itemEn: order.item_en,
+    photo: order.item_photo_url,
+    ttsOk: order.tts_ok,
   };
 }
 
@@ -59,12 +65,17 @@ export async function publishAlert(
   order: OrderRow,
   opts?: { replay?: boolean }
 ): Promise<void> {
-  const token = process.env.ALERT_WIDGET_TOKEN;
+  const token = await getWidgetToken();
   if (!token) {
-    console.warn("publishAlert: ALERT_WIDGET_TOKEN unset — alert not broadcast");
+    console.warn("publishAlert: widget_token unset — alert not broadcast");
     return;
   }
   if (!order.show_on_screen) return; // hidden tips never reach the overlay
+  // Held/blocked tips never reach the overlay either — approving one in the
+  // Privacy & moderation queue calls publishAlert again itself, which is what
+  // actually announces it. Covers every caller (webhook, sweep, override,
+  // replay) from this one gate.
+  if (order.moderation_status !== "approved") return;
 
   try {
     // send() on an unsubscribed channel POSTs to Realtime's HTTP broadcast
@@ -83,5 +94,43 @@ export async function publishAlert(
     }
   } catch (err) {
     console.error("publishAlert failed", err);
+  }
+}
+
+// Called wherever an order genuinely transitions to SUCCESS (promoteToSuccess,
+// forceSuccess) — NOT from approveModerated, since the goal total is a
+// financial fact counted the moment status became SUCCESS, regardless of
+// whether the alert was withheld pending moderation. Unlike publishAlert,
+// there's no show_on_screen/moderation gate here — a held or hidden tip still
+// moved money and still counts toward the goal.
+//
+// Fire-and-forget, same reasoning as publishAlert: a dropped broadcast costs
+// the overlay's next poll a few seconds of staleness, not correctness.
+export async function publishGoalUpdate(): Promise<void> {
+  const token = await getWidgetToken();
+  if (!token) return;
+
+  const summary = await computeGoalSummary();
+  const payload: GoalUpdatePayload = {
+    goal: summary
+      ? {
+          label: summary.label,
+          currency: summary.currency,
+          targetMinor: summary.targetMinor,
+          raisedMinor: summary.raisedMinor,
+          progress: summary.progress,
+          showOnOverlay: summary.showOnOverlay,
+        }
+      : null,
+  };
+
+  try {
+    const channel = supabase.channel(channelName(token));
+    const res = await channel.send({ type: "broadcast", event: GOAL_EVENT, payload });
+    if (res !== "ok") {
+      console.warn(`publishGoalUpdate: broadcast returned "${res}"`);
+    }
+  } catch (err) {
+    console.error("publishGoalUpdate failed", err);
   }
 }
