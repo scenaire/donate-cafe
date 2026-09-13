@@ -52,6 +52,15 @@ export async function requireAdmin(): Promise<
     };
   }
 
+  // Fast path for anonymous callers: without a Supabase auth cookie there is no
+  // session to verify, so skip building the client entirely. Keeps unauthorised
+  // probes off both the Auth API and (for routes that race this check against
+  // their queries) the database.
+  const store = await cookies();
+  if (!store.getAll().some((c) => /^sb-.*-auth-token(\.\d+)?$/.test(c.name))) {
+    return { ok: false, response: NextResponse.json({ error: "Unauthorized." }, { status: 401 }) };
+  }
+
   const client = await supabaseFromCookies();
   const { data, error } = await client.auth.getUser();
   const email = data?.user?.email?.trim().toLowerCase();

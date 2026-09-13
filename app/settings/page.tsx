@@ -111,7 +111,7 @@ const S = {
     goalNone: "ยังไม่ได้ตั้งเป้าหมาย",
     goalStatusLive: "กำลังแสดงอยู่", goalStatusEnded: "ปิดแล้ว",
     goalEndBtn: "ปิดเป้าหมาย", goalEndConfirm: "ปิดเป้าหมายนี้ตอนนี้เลยไหม? แถบจะหายจากหน้าร้านและโอเวอร์เลย์ทันที",
-    goalResumeBtn: "เปิดเป้าหมายอีกครั้ง",
+    goalStartNewBtn: "เริ่มเป้าหมายใหม่",
     goalDeadlineLabel: "วันครบกำหนด", goalClear: "ล้างวันที่",
     goalDeadlineNoteSet: (d: string) => `แสดงให้ลูกค้าเห็นว่า "ถึง ${d}"`,
     goalDeadlineNoteEmpty: "ไม่ใส่วันที่ก็ได้ แถบจะเติมไปเรื่อย ๆ ไม่มีวันสิ้นสุด",
@@ -265,7 +265,7 @@ const S = {
     goalNone: "No goal set yet",
     goalStatusLive: "Live", goalStatusEnded: "Ended",
     goalEndBtn: "End goal", goalEndConfirm: "End this goal now? It disappears from the tip page and overlay immediately.",
-    goalResumeBtn: "Resume goal",
+    goalStartNewBtn: "Start new goal",
     goalDeadlineLabel: "Deadline", goalClear: "clear",
     goalDeadlineNoteSet: (d: string) => `Shown to guests as "until ${d}".`,
     goalDeadlineNoteEmpty: "Leave empty and the jar keeps filling with no end date.",
@@ -499,6 +499,7 @@ export default function Settings() {
   const [goalShowOnShare, setGoalShowOnShare] = useState(true);
   const [goalRaised, setGoalRaised] = useState(0); // live, for the panel's own preview only
   const [endingGoal, setEndingGoal] = useState(false);
+  const [startingNewGoal, setStartingNewGoal] = useState(false);
 
   // ── menu ──────────────────────────────────────────────────────────────────
   const [items, setItems] = useState<MenuItem[]>([]);
@@ -735,7 +736,7 @@ export default function Settings() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             label: goalLabel, targetThb: goalTarget, currency: "thb", active: goalActive,
-            deadline: goalDeadline || null, ending: goalEnding,
+            deadline: goalDeadline || null, ending: goalEnding, startNew: startingNewGoal,
             showOnCounter: goalShowOnCounter, showOnOverlay: goalShowOnOverlay, showOnShare: goalShowOnShare,
           }),
         })]);
@@ -770,6 +771,8 @@ export default function Settings() {
         if (tailsOk) next.voiceTails = currentSnapshot.voiceTails;
         return next as SaveSnapshot;
       });
+      const goalResultIndex = reqEntries.findIndex(([key]) => key === "goal");
+      if (goalResultIndex >= 0 && results[goalResultIndex].ok) setStartingNewGoal(false);
     } catch {
       showFlash(L.saveFail);
     } finally {
@@ -869,9 +872,18 @@ export default function Settings() {
     if (!window.confirm(L.goalEndConfirm)) return;
     void setGoalActiveNow(false);
   }
-  function resumeGoal() {
+  function startNewGoal() {
     if (goalActive) return;
-    void setGoalActiveNow(true);
+    setGoalLabel("");
+    setGoalTarget(0);
+    setGoalActive(true);
+    setGoalDeadline("");
+    setGoalEnding("hold");
+    setGoalShowOnCounter(true);
+    setGoalShowOnOverlay(false);
+    setGoalShowOnShare(true);
+    setGoalRaised(0);
+    setStartingNewGoal(true);
   }
 
   function applyJarPreset(preset: JarPreset) {
@@ -950,7 +962,8 @@ export default function Settings() {
         body: JSON.stringify(payload),
       });
       if (!res.ok) {
-        showFlash(L.saveFail);
+        const error = await res.json().catch(() => ({}));
+        showFlash(typeof error.error === "string" ? error.error : L.saveFail);
         return;
       }
       setEditing(null);
@@ -1408,7 +1421,7 @@ export default function Settings() {
                       <div style={{ display: "flex", flexDirection: "column", gap: 11, padding: 14, background: "#FFF9EC", border: "3px solid #9E4B54" }}>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
                           <span style={{ fontFamily: dot, fontSize: 18, color: "#7A3F49" }}>{L.tGoal}</span>
-                          {(goalLabel.trim() || goalTarget > 0) && (
+                          {!startingNewGoal && (goalLabel.trim() || goalTarget > 0) && (
                             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                               <span style={{ fontFamily: mono, fontSize: 9, letterSpacing: ".06em", color: goalActive ? "#3E8E5A" : "#B07B6A" }}>
                                 {goalActive ? `● ${L.goalStatusLive}` : `○ ${L.goalStatusEnded}`}
@@ -1418,8 +1431,8 @@ export default function Settings() {
                                   {L.goalEndBtn}
                                 </button>
                               ) : (
-                                <button onClick={resumeGoal} disabled={endingGoal} style={{ ...editBtnStyle, opacity: endingGoal ? 0.6 : 1 }}>
-                                  {L.goalResumeBtn}
+                                <button onClick={startNewGoal} disabled={endingGoal} style={{ ...editBtnStyle, opacity: endingGoal ? 0.6 : 1 }}>
+                                  {L.goalStartNewBtn}
                                 </button>
                               )}
                             </div>

@@ -15,10 +15,11 @@ import type { OrderRow } from "./supabase";
 // to whatever the test staged; publishAlert/publishGoalUpdate are spied so we
 // assert precisely when the alert pipeline is (and isn't) triggered.
 
-const { staged, publishAlert, publishGoalUpdate } = vi.hoisted(() => ({
+const { staged, publishAlert, publishGoalUpdate, publishLiveUpdate } = vi.hoisted(() => ({
   staged: { result: { data: null as unknown, error: null as unknown } },
   publishAlert: vi.fn(),
   publishGoalUpdate: vi.fn(),
+  publishLiveUpdate: vi.fn(),
 }));
 
 vi.mock("./supabase", () => {
@@ -33,6 +34,7 @@ vi.mock("./supabase", () => {
 });
 
 vi.mock("./realtime", () => ({ publishAlert, publishGoalUpdate }));
+vi.mock("./live", () => ({ publishLiveUpdate }));
 
 import {
   promoteToSuccess,
@@ -53,6 +55,7 @@ function orderRow(overrides: Partial<OrderRow> = {}): OrderRow {
     show_on_screen: true,
     status: "SUCCESS",
     alert_played_at: null,
+    reversed_at: null,
     thb_equivalent_minor: 10_000,
     fx_rate_to_thb: 1,
     fx_source: "identity",
@@ -77,6 +80,7 @@ function stage(data: unknown, error: unknown = null) {
 beforeEach(() => {
   publishAlert.mockReset();
   publishGoalUpdate.mockReset();
+  publishLiveUpdate.mockReset();
   stage(null);
 });
 
@@ -170,5 +174,68 @@ describe("blockModerated / markFailed never announce", () => {
     stage(null);
     const res = await markFailed("pi_123");
     expect(res).toEqual({ transitioned: false, reason: "already_final" });
+  });
+});
+
+// The /live feed is the deliberate inverse of the alert pipeline: it exists so
+// the creator sees what the overlay refuses. These lock that asymmetry, because
+// the tempting "simplification" is to fold it into publishAlert's call sites —
+// which would silently stop held and hidden tips reaching the one view built to
+// show them.
+describe("publishLiveUpdate (the /live feed)", () => {
+  it("fires on a successful promotion, alongside the alert", async () => {
+    const row = orderRow({ status: "SUCCESS" });
+    stage(row);
+    await promoteToSuccess("pi_123");
+    expect(publishLiveUpdate).toHaveBeenCalledWith(row);
+  });
+
+  it("fires for a HIDDEN tip that the overlay never shows", async () => {
+    const row = orderRow({ status: "SUCCESS", show_on_screen: false });
+    stage(row);
+    await promoteToSuccess("pi_123");
+    expect(publishLiveUpdate).toHaveBeenCalledWith(row);
+  });
+
+  it("fires for a HELD tip whose alert is withheld pending a decision", async () => {
+    const row = orderRow({ status: "SUCCESS", moderation_status: "held" });
+    stage(row);
+    await promoteToSuccess("pi_123");
+    expect(publishLiveUpdate).toHaveBeenCalledWith(row);
+  });
+
+  it("fires on approval even when there is no alert to announce (still PENDING)", async () => {
+    const row = orderRow({ status: "PENDING", moderation_status: "approved" });
+    stage(row);
+    await approveModerated("pi_123");
+    expect(publishAlert).not.toHaveBeenCalled();
+    expect(publishLiveUpdate).toHaveBeenCalledWith(row);
+  });
+
+  it("fires on block and on failure — states the overlay has no concept of", async () => {
+    const blocked = orderRow({ moderation_status: "blocked" });
+    stage(blocked);
+    await blockModerated("pi_123");
+    expect(publishLiveUpdate).toHaveBeenCalledWith(blocked);
+
+    publishLiveUpdate.mockReset();
+    const failed = orderRow({ status: "FAILED" });
+    stage(failed);
+    await markFailed("pi_123");
+    expect(publishLiveUpdate).toHaveBeenCalledWith(failed);
+  });
+
+  it("does NOT fire when the transition lost its race — no duplicate feed rows", async () => {
+    stage(null);
+    await promoteToSuccess("pi_123");
+    await markFailed("pi_123");
+    await blockModerated("pi_123");
+    expect(publishLiveUpdate).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fire on a DB error", async () => {
+    stage(null, { message: "boom" });
+    await promoteToSuccess("pi_123");
+    expect(publishLiveUpdate).not.toHaveBeenCalled();
   });
 });

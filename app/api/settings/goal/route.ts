@@ -81,6 +81,10 @@ export async function PUT(req: NextRequest) {
   }
   const target_minor = toMinorUnits(targetNum, currency);
   const active = b.active !== false;
+  // An ended goal stays in the table as history. Starting another goal must
+  // insert a new row so its contribution window begins now, rather than
+  // reviving the old row (and counting its old tips again).
+  const startNew = b.startNew === true;
 
   // YYYY-MM-DD or empty/absent → no deadline.
   const rawDeadline = typeof b.deadline === "string" ? b.deadline.trim() : "";
@@ -99,7 +103,7 @@ export async function PUT(req: NextRequest) {
 
   if (active) {
     // Guard against an orphaned active row from outside this flow.
-    const { error: deactivateError } = existing
+    const { error: deactivateError } = existing && !startNew
       ? await supabase.from("goals").update({ is_active: false }).eq("is_active", true).neq("id", existing.id)
       : await supabase.from("goals").update({ is_active: false }).eq("is_active", true);
     if (deactivateError) {
@@ -110,16 +114,16 @@ export async function PUT(req: NextRequest) {
 
   const fields = { label, target_minor, currency, is_active: active, deadline, ending, show_on_counter, show_on_overlay, show_on_share };
 
-  if (existing) {
-    const { error } = await supabase.from("goals").update(fields).eq("id", existing.id);
-    if (error) {
-      console.error("Failed to update goal", error.message);
-      return NextResponse.json({ error: "Could not save goal." }, { status: 500 });
-    }
-  } else {
+  if (startNew || !existing) {
     const { error } = await supabase.from("goals").insert(fields);
     if (error) {
       console.error("Failed to create goal", error.message);
+      return NextResponse.json({ error: "Could not save goal." }, { status: 500 });
+    }
+  } else {
+    const { error } = await supabase.from("goals").update(fields).eq("id", existing.id);
+    if (error) {
+      console.error("Failed to update goal", error.message);
       return NextResponse.json({ error: "Could not save goal." }, { status: 500 });
     }
   }

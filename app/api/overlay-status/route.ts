@@ -10,13 +10,15 @@ import { supabase } from "@/lib/supabase";
 // No connection dot, no offline-hold: those need presence plumbing that's out of
 // Phase 1 scope.
 export async function GET() {
-  const auth = await requireAdmin();
-  if (!auth.ok) return auth.response;
+  // Raced against the counts below rather than awaited first — see the note in
+  // app/api/dashboard/analytics/route.ts.
+  const authPromise = requireAdmin();
 
   const midnight = new Date();
   midnight.setUTCHours(0, 0, 0, 0);
 
-  const [today, queue] = await Promise.all([
+  const [auth, today, queue] = await Promise.all([
+    authPromise,
     supabase
       .from("orders")
       .select("id", { count: "exact", head: true })
@@ -29,6 +31,7 @@ export async function GET() {
       .eq("show_on_screen", true)
       .is("alert_played_at", null),
   ]);
+  if (!auth.ok) return auth.response;
 
   if (today.error || queue.error) {
     console.error("overlay-status: count failed", today.error?.message ?? queue.error?.message);

@@ -11,6 +11,8 @@
 
 import { supabase, type OrderRow, type OrderStatus } from "./supabase";
 import { publishAlert, publishGoalUpdate } from "./realtime";
+import { publishLiveUpdate } from "./live";
+import { pushTipCredit } from "./bridge";
 
 // Statuses a tip may be promoted from. SUCCESS is excluded so a replayed
 // webhook is a no-op; FAILED is excluded because it needs a human decision
@@ -48,6 +50,14 @@ export async function promoteToSuccess(paymentIntentId: string): Promise<Promote
   const order = data as OrderRow;
   await publishAlert(order);
   await publishGoalUpdate();
+  // The conditional UPDATE above already decided a single winner, so the /live
+  // feed inherits the same exactly-once property the overlay has — no extra
+  // guard needed here. Unlike publishAlert this fires unconditionally: the feed
+  // is the creator's own view and shows hidden and held tips too.
+  await publishLiveUpdate(order);
+  // §6 step 3: mirror this succeeded tip to the wishlist while it features an
+  // item. No-op for local goals; never throws. The sweep pull is the backstop.
+  await pushTipCredit(order);
   return { transitioned: true, order };
 }
 
@@ -70,6 +80,9 @@ export async function forceSuccess(paymentIntentId: string): Promise<PromoteResu
   const order = data as OrderRow;
   await publishAlert(order);
   await publishGoalUpdate();
+  await publishLiveUpdate(order);
+  // §6 step 3: an admin force-success is still a succeeded tip — mirror it too.
+  await pushTipCredit(order);
   return { transitioned: true, order };
 }
 
@@ -94,6 +107,9 @@ export async function approveModerated(paymentIntentId: string): Promise<Promote
 
   const order = data as OrderRow;
   if (order.status === "SUCCESS") await publishAlert(order);
+  // Always — an approval decided on one device should clear the "needs a look"
+  // badge on any other device watching the feed, whether or not it announced.
+  await publishLiveUpdate(order);
   return { transitioned: true, order };
 }
 
@@ -114,7 +130,9 @@ export async function blockModerated(paymentIntentId: string): Promise<PromoteRe
     return { transitioned: false, reason: "not_found" };
   }
 
-  return { transitioned: true, order: data as OrderRow };
+  const order = data as OrderRow;
+  await publishLiveUpdate(order);
+  return { transitioned: true, order };
 }
 
 // PENDING/EXPIRED → FAILED, for a canceled Stripe intent. No publishAlert —
@@ -137,6 +155,36 @@ export async function markFailed(paymentIntentId: string): Promise<PromoteResult
     return { transitioned: false, reason: "already_final" };
   }
 
+  const order = data as OrderRow;
+  await publishLiveUpdate(order);
+  return { transitioned: true, order };
+}
+
+// A refund or chargeback on a previously-succeeded tip (webhook: charge.refunded
+// / charge.dispute.created). Stamps reversed_at so the tip-goal bridge's
+// goal-credits route reports the order as no-longer-SUCCESS and the wishlist
+// voids its mirrored credit (PLAN §6 step 4, in the wishlist repo). Deliberately
+// does NOT touch `status`: this site's own SUCCESS-based reporting is unchanged;
+// only the bridge reads reversed_at. Idempotent via the `is null` guard, so a
+// dispute following a refund (or a retried event) is a harmless no-op.
+export async function markReversed(paymentIntentId: string): Promise<PromoteResult> {
+  const { data, error } = await supabase
+    .from("orders")
+    .update({ reversed_at: new Date().toISOString() })
+    .eq("payment_intent_id", paymentIntentId)
+    .is("reversed_at", null)
+    .select()
+    .maybeSingle();
+
+  if (error) {
+    console.error("markReversed failed", paymentIntentId, error.message);
+    return { transitioned: false, reason: "not_found" };
+  }
+  if (!data) {
+    // Already reversed, or no order for this intent (e.g. a refund of a tip that
+    // predates the Supabase cutover). Neither is worth a retry.
+    return { transitioned: false, reason: "already_final" };
+  }
   return { transitioned: true, order: data as OrderRow };
 }
 

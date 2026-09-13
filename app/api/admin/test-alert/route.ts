@@ -22,6 +22,7 @@ export async function POST() {
     show_on_screen: true,
     status: "SUCCESS",
     alert_played_at: null,
+    reversed_at: null,
     thb_equivalent_minor: 10000,
     fx_rate_to_thb: 1,
     fx_source: "identity",

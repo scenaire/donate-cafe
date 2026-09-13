@@ -1,14 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/supabase-server";
 import { supabase } from "@/lib/supabase";
+import { toWebp, CACHE_CONTROL } from "@/lib/image";
 
-// Session-gated image upload for café assets (treat photos now; emotion/scene
-// art later). Accepts a single image via multipart form-data, stores it in the
+// Session-gated image upload for café assets (menu thumbs, emotion portraits,
+// scene backdrops). Accepts a single image via multipart form-data, stores it in the
 // public `cafe-assets` bucket, and returns its public URL — the caller then
 // persists that URL on the relevant row (e.g. menu_items.thumb_url).
 //
 // Uploads go through the service-role client (bypasses storage RLS); the bucket
 // is public-read, so the returned URL is directly usable on the tip page.
+//
+// Nothing resizes or re-encodes these on the way out: the tip page renders them
+// with a plain <img>/background-image straight from the bucket (no next/image,
+// no `images` config), so the stored bytes are exactly what every guest
+// downloads. That makes this route the place the weight has to be fixed — it
+// normalises everything through lib/image.ts, which scripts/backfill-assets.ts
+// also uses so new and retroactively-converted files come out identical.
 
 export const runtime = "nodejs";
 
@@ -45,14 +53,17 @@ export async function POST(req: NextRequest) {
   }
 
   // Namespaced, collision-free key. The `folder` prefix keeps different asset
-  // kinds tidy in the bucket (menu/, later emote/, scene/).
+  // kinds tidy in the bucket (menu/, emote/, scene/) and picks the size cap.
   const folderRaw = form.get("folder");
   const folder = typeof folderRaw === "string" && /^[a-z0-9_-]{1,24}$/.test(folderRaw) ? folderRaw : "menu";
-  const key = `${folder}/${crypto.randomUUID()}.${ext}`;
 
   const bytes = new Uint8Array(await file.arrayBuffer());
-  const { error } = await supabase.storage.from("cafe-assets").upload(key, bytes, {
-    contentType: file.type,
+  const { bytes: outBytes, contentType, ext: outExt } = await toWebp(bytes, file.type, ext, folder);
+
+  const key = `${folder}/${crypto.randomUUID()}.${outExt}`;
+  const { error } = await supabase.storage.from("cafe-assets").upload(key, outBytes, {
+    contentType,
+    cacheControl: CACHE_CONTROL,
     upsert: false,
   });
   if (error) {

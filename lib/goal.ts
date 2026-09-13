@@ -13,16 +13,19 @@
 // this — no cron needed for something this low-stakes.
 
 import { supabase } from "./supabase";
-import { isCurrency, type Currency } from "./money";
+import { isCurrency, toMinorUnits, type Currency } from "./money";
+import { fetchWishlistGoal } from "./bridge";
 
 export type GoalEnding = "raise" | "hold" | "hide";
+export type GoalKind = "local" | "wishlist";
 
 export type GoalSummary = {
   label: string;
   currency: Currency;
   targetMinor: number;
   raisedMinor: number;
-  progress: number; // 0..1, clamped
+  progress: number; // 0..1 for a local goal (clamped); UNCLAMPED for wishlist
+  kind: GoalKind;
   deadline: string | null;
   ending: GoalEnding;
   showOnCounter: boolean;
@@ -33,7 +36,7 @@ export type GoalSummary = {
 export async function computeGoalSummary(): Promise<GoalSummary | null> {
   const { data: goal, error: goalError } = await supabase
     .from("goals")
-    .select("id, label, target_minor, currency, starts_at, deadline, ending, show_on_counter, show_on_overlay, show_on_share")
+    .select("id, label, target_minor, currency, kind, starts_at, deadline, ending, show_on_counter, show_on_overlay, show_on_share")
     .eq("is_active", true)
     .maybeSingle();
 
@@ -41,7 +44,31 @@ export async function computeGoalSummary(): Promise<GoalSummary | null> {
     console.error("Failed to load goal", goalError.message);
     return null;
   }
-  if (!goal || !isCurrency(goal.currency)) return null;
+  if (!goal) return null;
+
+  // Wishlist-tracking goal: the wishlist DB is the sole ledger, so read its
+  // /api/goal instead of summing local orders. Progress is deliberately NOT
+  // clamped — an item carried past 100% by tips reads past 100% (PLAN §6). The
+  // raise/hold/hide auto-ending below is skipped: the wishlist owns lifecycle.
+  if (goal.kind === "wishlist") {
+    const wl = await fetchWishlistGoal();
+    if (!wl) return null;
+    return {
+      label: wl.label || (goal.label as string),
+      currency: "thb",
+      targetMinor: toMinorUnits(wl.targetThb, "thb"),
+      raisedMinor: toMinorUnits(wl.raisedThb, "thb"),
+      progress: Number.isFinite(wl.progress) ? wl.progress : 0,
+      kind: "wishlist",
+      deadline: null,
+      ending: "hold",
+      showOnCounter: goal.show_on_counter as boolean,
+      showOnOverlay: goal.show_on_overlay as boolean,
+      showOnShare: goal.show_on_share as boolean,
+    };
+  }
+
+  if (!isCurrency(goal.currency)) return null;
 
   const currency = goal.currency as Currency;
   const { data, error } = await supabase.rpc("sum_succeeded_orders_since", { since_ts: goal.starts_at });
@@ -75,6 +102,7 @@ export async function computeGoalSummary(): Promise<GoalSummary | null> {
     targetMinor: goal.target_minor as number,
     raisedMinor,
     progress: Math.min(1, goal.target_minor > 0 ? raisedMinor / goal.target_minor : 0),
+    kind: "local",
     deadline: goal.deadline as string | null,
     ending,
     showOnCounter: goal.show_on_counter as boolean,

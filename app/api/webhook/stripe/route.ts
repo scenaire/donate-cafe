@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
 import { supabase } from "@/lib/supabase";
-import { promoteToSuccess } from "@/lib/orders";
+import { promoteToSuccess, markReversed } from "@/lib/orders";
+import type Stripe from "stripe";
 
 export const runtime = "nodejs"; // Stripe's signature check needs Node crypto, not the Edge runtime
 
@@ -34,9 +35,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid signature." }, { status: 400 });
   }
 
-  // Step 2 — only succeeded payments do anything. Everything else is
-  // acknowledged so Stripe stops retrying it.
-  if (event.type !== "payment_intent.succeeded") {
+  // Step 2 — a succeeded payment moves an order to SUCCESS; a refund or
+  // chargeback stamps it reversed (for the tip-goal bridge only — see
+  // markReversed). Everything else is acknowledged so Stripe stops retrying it.
+  const HANDLED = new Set(["payment_intent.succeeded", "charge.refunded", "charge.dispute.created"]);
+  if (!HANDLED.has(event.type)) {
     return NextResponse.json({ received: true });
   }
 
@@ -59,10 +62,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Storage unavailable." }, { status: 500 });
   }
 
+  // A refund/chargeback carries a Charge or Dispute, not a PaymentIntent — both
+  // reference their payment_intent, which is how we find the order. Reversal is
+  // read only by the tip-goal bridge (goal-credits); it does not walk `status`
+  // back or touch this site's own totals.
+  if (event.type === "charge.refunded" || event.type === "charge.dispute.created") {
+    const obj = event.data.object as Stripe.Charge | Stripe.Dispute;
+    const pi = typeof obj.payment_intent === "string" ? obj.payment_intent : obj.payment_intent?.id;
+    if (pi) {
+      const reversed = await markReversed(pi);
+      if (!reversed.transitioned && reversed.reason === "not_found") {
+        console.warn("Webhook reversal for unknown order", pi);
+      }
+    } else {
+      console.warn("Webhook reversal with no payment_intent", event.id);
+    }
+    return NextResponse.json({ received: true });
+  }
+
   // Steps 4 & 5 — match the order and transition it. promoteToSuccess handles
   // PENDING→SUCCESS and EXPIRED→SUCCESS atomically and publishes the alert;
   // SUCCESS is a no-op and FAILED is left alone for a human to override.
-  const paymentIntentId = (event.data.object as import("stripe").Stripe.PaymentIntent).id;
+  const paymentIntentId = (event.data.object as Stripe.PaymentIntent).id;
   const result = await promoteToSuccess(paymentIntentId);
 
   if (!result.transitioned && result.reason === "not_found") {

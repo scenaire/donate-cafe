@@ -61,6 +61,11 @@ export type OrderRow = {
   show_on_screen: boolean;
   status: OrderStatus;
   alert_played_at: string | null;
+  // Set by the webhook on charge.refunded / charge.dispute.created. Read ONLY
+  // by the tip-goal bridge (app/api/goal-credits) so the wishlist can void a
+  // mirrored credit whose tip was reversed. Deliberately separate from `status`
+  // so donate-cafe's own SUCCESS-based reporting is untouched. See lib/orders.ts.
+  reversed_at: string | null;
   // THB-equivalent snapshot frozen at PENDING creation — see lib/fx.ts. NULL
   // until captured; NULL means "unknown", never "zero".
   thb_equivalent_minor: number | null;

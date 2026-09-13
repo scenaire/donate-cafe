@@ -78,19 +78,30 @@ export async function publishAlert(
   if (order.moderation_status !== "approved") return;
 
   try {
-    // send() on an unsubscribed channel POSTs to Realtime's HTTP broadcast
-    // endpoint rather than opening a websocket — the right shape for a
-    // serverless function that lives for milliseconds.
+    // httpSend() POSTs to Realtime's HTTP broadcast endpoint instead of opening
+    // a websocket — the right shape for a serverless function that lives for
+    // milliseconds. It is the explicit form of what send() used to do implicitly
+    // on an unsubscribed channel, which supabase-js now deprecates.
+    //
+    // Note the failure shape differs from send()'s "ok" | "error" string: on
+    // anything but a 202 this REJECTS rather than resolving {success:false}, so
+    // the catch below — not the check — is what actually handles a failed
+    // broadcast. The check stays because the declared type permits the resolved
+    // failure and a future version may start using it.
+    //
+    // We deliberately don't removeChannel() afterwards, despite the upstream
+    // example doing so: channel() dedupes by topic and these names are constant,
+    // so at most one object per topic ever exists. Removing it would just make
+    // the next call rebuild it.
     const channel = supabase.channel(channelName(token));
-    const res = await channel.send({
-      type: "broadcast",
-      event: ALERT_EVENT,
-      payload: opts?.replay
+    const res = await channel.httpSend(
+      ALERT_EVENT,
+      opts?.replay
         ? { ...alertPayloadFromOrder(order), replay: true as const }
-        : alertPayloadFromOrder(order),
-    });
-    if (res !== "ok") {
-      console.warn(`publishAlert: broadcast returned "${res}" for ${order.payment_intent_id}`);
+        : alertPayloadFromOrder(order)
+    );
+    if (!res.success) {
+      console.warn(`publishAlert: broadcast failed (${res.status}) for ${order.payment_intent_id}: ${res.error}`);
     }
   } catch (err) {
     console.error("publishAlert failed", err);
@@ -125,10 +136,12 @@ export async function publishGoalUpdate(): Promise<void> {
   };
 
   try {
+    // See publishAlert for why this is httpSend and why the catch does the real
+    // failure handling.
     const channel = supabase.channel(channelName(token));
-    const res = await channel.send({ type: "broadcast", event: GOAL_EVENT, payload });
-    if (res !== "ok") {
-      console.warn(`publishGoalUpdate: broadcast returned "${res}"`);
+    const res = await channel.httpSend(GOAL_EVENT, payload);
+    if (!res.success) {
+      console.warn(`publishGoalUpdate: broadcast failed (${res.status}): ${res.error}`);
     }
   } catch (err) {
     console.error("publishGoalUpdate failed", err);

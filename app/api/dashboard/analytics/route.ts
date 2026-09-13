@@ -70,30 +70,28 @@ function parseAnchor(range: Range, anchor: string | null, now: Date): { y: numbe
 }
 
 export async function GET(req: NextRequest) {
-  const auth = await requireAdmin();
-  if (!auth.ok) return auth.response;
+  // Started, not awaited: the admin check is its own network round trip and the
+  // queries below don't depend on it. Nothing is returned before it resolves, and
+  // requireAdmin() short-circuits cookie-less callers without touching the
+  // network, so an anonymous probe still costs nothing.
+  const authPromise = requireAdmin();
 
   const params = req.nextUrl.searchParams;
   const rangeParam = params.get("range");
   const range: Range = rangeParam === "year" || rangeParam === "all" ? rangeParam : "month";
   const now = new Date();
 
-  // Earliest order bounds the period picker (and the "all" window start).
-  const { data: firstRows, error: firstError } = await supabase
-    .from("orders")
-    .select("created_at")
-    .order("created_at", { ascending: true })
-    .limit(1);
-  if (firstError) {
-    console.error("analytics: earliest-order query failed", firstError.message);
-    return NextResponse.json({ error: "Could not load analytics." }, { status: 500 });
-  }
-  const earliest = firstRows?.[0]?.created_at ?? now.toISOString();
-
   const { y, m } = parseAnchor(range, params.get("anchor"), now);
 
   // Resolve the current window [from, to), the previous comparable window (for
   // the delta), the chart bucket granularity, and a human title.
+  //
+  // Only the "all" window's start depends on the earliest order, and for that
+  // range the start is the earliest row anyway — so the lower bound is a no-op
+  // and can be dropped. That decouples every query below from the earliest-order
+  // lookup, which is what lets all three run concurrently instead of in series:
+  // this route gates the dashboard's first paint, and each Supabase hop is a
+  // full network round trip.
   let from: number;
   let to: number;
   let prevFrom: number | null = null;
@@ -113,20 +111,56 @@ export async function GET(req: NextRequest) {
     prevTo = from;
     bucket = "month";
   } else {
-    from = new Date(earliest).getTime();
+    from = 0; // provisional — replaced with the earliest order below
     to = now.getTime() + 1;
     bucket = "month";
   }
 
+  // Earliest order bounds the period picker (and the "all" window start).
+  const earliestQuery = supabase
+    .from("orders")
+    .select("created_at")
+    .order("created_at", { ascending: true })
+    .limit(1);
+
   // Succeeded rows in the window — the substrate for every KPI, the chart, and
   // the supporter ranking.
-  const { data, error } = await supabase
+  let windowQuery = supabase
     .from("orders")
     .select("customer_name, amount_minor, currency, thb_equivalent_minor, created_at")
     .eq("status", "SUCCESS")
-    .gte("created_at", new Date(from).toISOString())
     .lt("created_at", new Date(to).toISOString())
     .limit(ROW_CAP);
+  if (range !== "all") windowQuery = windowQuery.gte("created_at", new Date(from).toISOString());
+
+  // Previous comparable window, for the delta (month/year only).
+  const prevQuery =
+    prevFrom != null && prevTo != null
+      ? supabase
+          .from("orders")
+          .select("amount_minor, currency, thb_equivalent_minor")
+          .eq("status", "SUCCESS")
+          .gte("created_at", new Date(prevFrom).toISOString())
+          .lt("created_at", new Date(prevTo).toISOString())
+          .limit(ROW_CAP)
+      : null;
+
+  const [auth, firstResult, windowResult, prevResult] = await Promise.all([
+    authPromise,
+    earliestQuery,
+    windowQuery,
+    prevQuery ?? Promise.resolve(null),
+  ]);
+  if (!auth.ok) return auth.response;
+
+  if (firstResult.error) {
+    console.error("analytics: earliest-order query failed", firstResult.error.message);
+    return NextResponse.json({ error: "Could not load analytics." }, { status: 500 });
+  }
+  const earliest = firstResult.data?.[0]?.created_at ?? now.toISOString();
+  if (range === "all") from = new Date(earliest).getTime();
+
+  const { data, error } = windowResult;
   if (error) {
     console.error("analytics: window query failed", error.message);
     return NextResponse.json({ error: "Could not load analytics." }, { status: 500 });
@@ -172,18 +206,9 @@ export async function GET(req: NextRequest) {
 
   // Delta vs. the previous comparable window (month/year only).
   let deltaPct: number | null = null;
-  if (prevFrom != null && prevTo != null) {
-    const { data: prevData, error: prevError } = await supabase
-      .from("orders")
-      .select("amount_minor, currency, thb_equivalent_minor")
-      .eq("status", "SUCCESS")
-      .gte("created_at", new Date(prevFrom).toISOString())
-      .lt("created_at", new Date(prevTo).toISOString())
-      .limit(ROW_CAP);
-    if (!prevError) {
-      const prevGross = (prevData ?? []).reduce((a, o) => a + thbMinorOf(o), 0);
-      deltaPct = prevGross > 0 ? Math.round(((gross - prevGross) / prevGross) * 100) : null;
-    }
+  if (prevResult && !prevResult.error) {
+    const prevGross = (prevResult.data ?? []).reduce((a, o) => a + thbMinorOf(o), 0);
+    deltaPct = prevGross > 0 ? Math.round(((gross - prevGross) / prevGross) * 100) : null;
   }
 
   // Sort a bucket's per-currency totals into the fixed display order.

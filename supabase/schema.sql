@@ -30,6 +30,11 @@ create table if not exists public.orders (
   -- Set in the alert widget, which lost its contents on every OBS reload and
   -- caused recent tips to re-announce. Server-side state can't be reloaded away.
   alert_played_at   timestamptz,
+  -- Set by the webhook on charge.refunded / charge.dispute.created. Read only by
+  -- the tip-goal bridge (app/api/goal-credits), which reports a reversed order
+  -- as non-SUCCESS so the wishlist voids its mirrored credit. Separate from
+  -- `status` on purpose — this site's own SUCCESS-based totals are untouched.
+  reversed_at       timestamptz,
   -- THB-equivalent snapshot, frozen at PENDING creation (see lib/fx.ts) so the
   -- supporters podium can rank across currencies without re-converting old
   -- tips at whatever rate happens to be cached today. All three NULL until
@@ -65,6 +70,7 @@ create table if not exists public.orders (
 alter table public.orders add column if not exists thb_equivalent_minor bigint;
 alter table public.orders add column if not exists fx_rate_to_thb       numeric(18,8);
 alter table public.orders add column if not exists fx_source            text;
+alter table public.orders add column if not exists reversed_at          timestamptz;
 alter table public.orders drop constraint if exists orders_fx_source_check;
 alter table public.orders add constraint orders_fx_source_check
   check (fx_source is null or fx_source in ('identity','cache','seed','repair'));
@@ -139,7 +145,12 @@ create table if not exists public.goals (
   -- counter while staying off the stream overlay.
   show_on_counter  boolean not null default true,
   show_on_overlay  boolean not null default false,
-  show_on_share    boolean not null default true
+  show_on_share    boolean not null default true,
+  -- 'local' sums this site's own succeeded orders (the RPC below). 'wishlist'
+  -- hands the goal off to the wishlist site, which owns the ledger — see
+  -- lib/goal.ts / lib/bridge.ts and the wishlist repo's PLAN §6.
+  kind             text    not null default 'local'
+                     check (kind in ('local','wishlist'))
 );
 
 alter table public.goals add column if not exists deadline        date;
@@ -147,9 +158,13 @@ alter table public.goals add column if not exists ending          text not null 
 alter table public.goals add column if not exists show_on_counter boolean not null default true;
 alter table public.goals add column if not exists show_on_overlay boolean not null default false;
 alter table public.goals add column if not exists show_on_share   boolean not null default true;
+alter table public.goals add column if not exists kind            text not null default 'local';
 alter table public.goals drop constraint if exists goals_ending_check;
 alter table public.goals add constraint goals_ending_check
   check (ending in ('raise','hold','hide'));
+alter table public.goals drop constraint if exists goals_kind_check;
+alter table public.goals add constraint goals_kind_check
+  check (kind in ('local','wishlist'));
 
 -- At most one active goal — the overlay has room for exactly one.
 create unique index if not exists goals_single_active_idx
@@ -332,8 +347,12 @@ as $$
     and created_at >= since_ts
     and thb_equivalent_minor is not null
   group by lower(trim(customer_name))
-  -- Aggregates, not output columns: the ranking figure stays internal.
-  order by sum(thb_equivalent_minor) desc, min(customer_name) asc
+  -- Aggregates, not output columns: neither the ranking figure nor the
+  -- tie-break timestamp is an output column. Ties go to whoever supported
+  -- FIRST -- min(created_at) is that supporter's earliest tip in the window --
+  -- so an equal total never demotes the person who got there first. Name is
+  -- only the last resort, to keep the order deterministic.
+  order by sum(thb_equivalent_minor) desc, min(created_at) asc, min(customer_name) asc
   limit limit_n;
 $$;
 

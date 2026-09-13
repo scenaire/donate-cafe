@@ -330,6 +330,12 @@ export const THANKS_TEMPLATE_DEFAULT: VoiceTemplate = {
 
 // Café copy (tip-page COPY), trimmed to the keys the phase-1 page renders.
 export type CafeCopy = {
+  // Boot curtain shown while the counter's own data + artwork load. `bootSteps`
+  // is ordered: layout → fonts → café data → artwork, matching the real
+  // milestones the curtain's progress bar fills from.
+  bootTitle: string;
+  bootSteps: [string, string, string, string];
+  bootReady: string;
   tagline: string;
   flowerLabel: string;
   menuTitle: string;
@@ -432,6 +438,9 @@ export const SHARE_HANDLE = "NAIRELIE.CAFE";
 
 export const CAFE_COPY: Record<Lang, CafeCopy> = {
   th: {
+    bootTitle: "กำลังเปิดร้าน…",
+    bootSteps: ["จัดโต๊ะ…", "เตรียมป้ายเมนู…", "ตั้งเมนูวันนี้…", "เปิดไฟหน้าร้าน…"],
+    bootReady: "พร้อมแล้ว~",
     tagline: "คาเฟ่เล็ก ๆ ของแนร์ · ฝากขนมให้กันได้นะคะ",
     flowerLabel: "ดอกไม้เดือนนี้",
     menuTitle: "เลือกเมนู~",
@@ -529,6 +538,9 @@ export const CAFE_COPY: Record<Lang, CafeCopy> = {
     shareTogGoal: "แสดงเป้าหมายร้าน",
   },
   en: {
+    bootTitle: "Opening the café…",
+    bootSteps: ["Setting the tables…", "Chalking the board…", "Laying out today's menu…", "Turning the lights on…"],
+    bootReady: "Ready~",
     tagline: "Naire's little café · leave a treat if you like",
     flowerLabel: "FLOWER OF THE MONTH",
     menuTitle: "Pick a treat~",

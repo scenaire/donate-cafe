@@ -11,12 +11,18 @@ import { ALERT_EVENT, channelName } from "./realtime.shared";
 // missing token must also suppress the broadcast rather than send on a
 // predictable channel.
 
+// httpSend(event, payload) — the explicit REST form that replaced send()'s
+// implicit fallback. It resolves {success:true} on a 202 and REJECTS on anything
+// else, so "never throws" is proven by rejecting it, not by resolving a failure.
+
 const { getWidgetToken, sendSpy, channelSpy } = vi.hoisted(() => {
-  const sendSpy = vi.fn<(msg: unknown) => Promise<string>>(() => Promise.resolve("ok"));
+  const sendSpy = vi.fn<(event: string, payload: unknown) => Promise<{ success: true }>>(
+    () => Promise.resolve({ success: true as const })
+  );
   return {
     getWidgetToken: vi.fn(() => Promise.resolve<string | null>("tok")),
     sendSpy,
-    channelSpy: vi.fn(() => ({ send: sendSpy })),
+    channelSpy: vi.fn(() => ({ httpSend: sendSpy })),
   };
 });
 
@@ -37,6 +43,7 @@ function orderRow(overrides: Partial<OrderRow> = {}): OrderRow {
     show_on_screen: true,
     status: "SUCCESS",
     alert_played_at: null,
+    reversed_at: null,
     thb_equivalent_minor: 10_000,
     fx_rate_to_thb: 1,
     fx_source: "identity",
@@ -66,16 +73,15 @@ describe("publishAlert — broadcasts an approved, visible tip", () => {
     await publishAlert(order);
     expect(channelSpy).toHaveBeenCalledWith(channelName("tok"));
     expect(sendSpy).toHaveBeenCalledTimes(1);
-    const arg = sendSpy.mock.calls[0][0] as { type: string; event: string; payload: { name: string } };
-    expect(arg.type).toBe("broadcast");
-    expect(arg.event).toBe(ALERT_EVENT);
-    expect(arg.payload.name).toBe("Alice");
+    const [event, payload] = sendSpy.mock.calls[0] as [string, { name: string }];
+    expect(event).toBe(ALERT_EVENT);
+    expect(payload.name).toBe("Alice");
   });
 
   it("marks the payload as a replay when asked", async () => {
     await publishAlert(orderRow(), { replay: true });
-    const arg = sendSpy.mock.calls[0][0] as { payload: { replay?: boolean } };
-    expect(arg.payload.replay).toBe(true);
+    const [, payload] = sendSpy.mock.calls[0] as [string, { replay?: boolean }];
+    expect(payload.replay).toBe(true);
   });
 });
 
@@ -102,8 +108,18 @@ describe("publishAlert — fails closed", () => {
     expect(channelSpy).not.toHaveBeenCalled();
   });
 
-  it("never throws when the broadcast send rejects", async () => {
+  it("never throws when the broadcast rejects", async () => {
+    // httpSend's real failure mode: it rejects rather than resolving a failure
+    // shape, and a webhook must still return 2xx to Stripe for an event it has
+    // already applied to the database.
     sendSpy.mockRejectedValueOnce(new Error("network"));
+    await expect(publishAlert(orderRow())).resolves.toBeUndefined();
+  });
+
+  it("never throws when the broadcast resolves a failure shape", async () => {
+    // The documented-but-currently-unused {success:false} branch. Locked so the
+    // warn path stays total if a future supabase-js starts returning it.
+    sendSpy.mockResolvedValueOnce({ success: false, status: 500, error: "boom" } as unknown as { success: true });
     await expect(publishAlert(orderRow())).resolves.toBeUndefined();
   });
 });

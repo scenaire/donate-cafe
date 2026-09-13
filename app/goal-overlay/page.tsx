@@ -136,6 +136,9 @@ export default function GoalOverlay() {
 
   // SIMPLE mode
   const fillCss = jarFillCss(jarConfig.fill, jarConfig.texture);
+  // The label/CODE tokens carry the true % (past 100 for a wishlist goal), but
+  // the built-in bar's fill must not overflow its own track.
+  const fillWidth = `${Math.min(100, pctNum)}%`;
   const backing = jarBackingCss(jarConfig.backing);
   const justify = jarConfig.align === "left" ? "flex-start" : jarConfig.align === "right" ? "flex-end" : "center";
   const labelStyle: React.CSSProperties = { fontFamily: "var(--font-display)", fontSize: 13, fontWeight: 700, color: "#FFF6EA", textShadow: "0 1px 4px rgba(0,0,0,.5), 0 0 12px rgba(0,0,0,.3)" };
@@ -149,7 +152,7 @@ export default function GoalOverlay() {
           {jarConfig.showAmount && <span style={labelStyle}>{raised} / {target}</span>}
         </div>
         <div style={{ height: jarConfig.heightPx, background: backing.background, boxShadow: backing.boxShadow, padding: 3 }}>
-          <div style={{ height: "100%", background: fillCss, width: goalPct, transition: "width .5s" }} />
+          <div style={{ height: "100%", background: fillCss, width: fillWidth, transition: "width .5s" }} />
         </div>
       </div>
     </div>

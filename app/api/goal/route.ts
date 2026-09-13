@@ -39,6 +39,7 @@ export async function GET() {
     {
       goal: {
         label: summary.label,
+        kind: summary.kind,
         targetThb: fromMinorUnits(summary.targetMinor, summary.currency),
         raisedThb: fromMinorUnits(summary.raisedMinor, summary.currency),
         deadline: summary.deadline,

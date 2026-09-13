@@ -11,8 +11,9 @@ const PAGE_SIZE = 12;
 // classic prev/1/2/next pager. Search and the filter are WHERE clauses over the
 // whole table (not just the current page).
 export async function GET(req: NextRequest) {
-  const auth = await requireAdmin();
-  if (!auth.ok) return auth.response;
+  // Raced against the query below rather than awaited first — see the note in
+  // app/api/dashboard/analytics/route.ts. No rows are returned unless it passes.
+  const authPromise = requireAdmin();
 
   const params = req.nextUrl.searchParams;
   const filter = parseTxFilter(params.get("filter"));
@@ -36,7 +37,8 @@ export async function GET(req: NextRequest) {
     if (safe.trim()) query = query.or(`customer_name.ilike.%${safe}%,message.ilike.%${safe}%`);
   }
 
-  const { data, error, count } = await query;
+  const [auth, { data, error, count }] = await Promise.all([authPromise, query]);
+  if (!auth.ok) return auth.response;
   if (error) {
     console.error("Failed to list orders", error.message);
     return NextResponse.json({ error: "Could not fetch transactions." }, { status: 500 });

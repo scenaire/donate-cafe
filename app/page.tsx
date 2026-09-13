@@ -74,6 +74,22 @@ const QR_TTL_MS = 10 * 60 * 1000; // mirrors EXPIRE_AFTER_MS in app/api/sweep/ro
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 // The desktop card is a fixed 1180px; below this the mobile shell takes over.
 const MOBILE_BREAKPOINT = 859;
+
+// ── Boot curtain timings ────────────────────────────────────────────────────
+// Every one of these is a ceiling, never a delay: the curtain lifts the moment
+// the counter is genuinely ready. They exist so a slow bucket, a blocked font
+// or a dead API can't hold a paying guest behind a loading screen.
+const BOOT_MAX_MS = 2600; // hard cap — lift regardless of what is still pending
+const BOOT_FONT_MS = 800; // pixel fonts; past this, paint with the fallback
+const BOOT_ART_MS = 1600; // portrait + backdrop bitmaps
+const BOOT_SHOW_MS = 120; // don't paint the curtain at all if we're ready first
+const BOOT_FADE_MS = 300; // must match .boot-curtain's transition in globals.css
+
+// Desktop menu grid. Two rows of treats is the most the menu column can hold
+// and still stay shorter than the left rail (portrait + message box); past that
+// the café-goal card moves out of the menu column and under the order slip.
+const MENU_GRID_COLS = 3;
+const GOAL_UNDER_MENU_MAX_ROWS = 2;
 // Café name shown before /api/cafe-config resolves (and if it never does).
 const FALLBACK_CAFE_NAME = "Whispering Rain Café";
 
@@ -281,6 +297,19 @@ export default function Page() {
   // server render and first client render agree (no hydration mismatch/flash).
   const [isMobile, setIsMobile] = useState<boolean | null>(null);
 
+  // ── Boot curtain readiness ────────────────────────────────────────────────
+  // Four real milestones, in the order they resolve. The curtain's progress bar
+  // reads straight off these, so it can never show progress the page hasn't
+  // actually made.
+  const [fontsReady, setFontsReady] = useState(false);
+  const [supportersSettled, setSupportersSettled] = useState(false);
+  const [configSettled, setConfigSettled] = useState(false);
+  const [artReady, setArtReady] = useState(false);
+  const [booted, setBooted] = useState(false);
+  // Kept mounted through the fade so the counter emerges from the curtain
+  // rather than replacing it.
+  const [curtainMounted, setCurtainMounted] = useState(true);
+
   const [screen, setScreen] = useState<Screen>("counter");
   const [cur, setCur] = useState<DisplayCurrency>("THB");
   // Seeded from the static fallback; overridden by /api/menu once it resolves
@@ -339,12 +368,18 @@ export default function Page() {
   const [topName, setTopName] = useState<string>("");
   const [recent, setRecent] = useState<RecentSupporter[]>([]);
   // Seeded from the static default; overridden by /api/goal when an active goal exists.
-  const [goal, setGoal] = useState<{ label: string; targetThb: number; raisedThb: number; deadline: string | null; showOnCounter: boolean; showOnShare: boolean }>({
+  // showOnCounter starts FALSE on purpose: it is a creator setting, and the only
+  // honest default before the fetch answers is "don't show it". Defaulting to
+  // true flashed the bar on every load and — because the catch below leaves the
+  // seed in place — left it permanently visible to anyone whose /api/goal call
+  // failed, even with the setting switched off.
+  const [goal, setGoal] = useState<{ label: string; kind: "local" | "wishlist"; targetThb: number; raisedThb: number; deadline: string | null; showOnCounter: boolean; showOnShare: boolean }>({
     label: "",
+    kind: "local",
     targetThb: GOAL.targetThb,
     raisedThb: GOAL.raisedThb,
     deadline: null,
-    showOnCounter: true,
+    showOnCounter: false,
     showOnShare: true,
   });
   const [shareAmount, setShareAmount] = useState(true);
@@ -406,7 +441,11 @@ export default function Page() {
   // Minimum shown in the current display currency (e.g. ฿20 / $0.6 / ¥90).
   const amtErrMsg = c.minWarn(fmtDisplay(MIN_TIP_THB, cur));
 
-  const goalPct = Math.min(100, (goal.raisedThb / goal.targetThb) * 100);
+  const goalPctRaw = goal.targetThb > 0 ? (goal.raisedThb / goal.targetThb) * 100 : 0;
+  const goalPct = Math.min(100, goalPctRaw);
+  // A wishlist goal can read past 100% (tips are uncapped, PLAN §6); its number
+  // shows the true value while the fill (goalPct) still caps at the track.
+  const goalPctShown = goal.kind === "wishlist" ? goalPctRaw : goalPct;
   const previewPct = totalThb > 0 ? Math.min(100 - goalPct, Math.max(1.5, (totalThb / goal.targetThb) * 100)) : 0;
   // Creator-level master switch (Settings → Goal → "On share cards") wins
   // over the guest's own toggle — off means the goal never appears in a
@@ -565,21 +604,22 @@ export default function Page() {
       if (goalRes?.goal) {
         setGoal({
           label: goalRes.goal.label ?? "",
+          kind: goalRes.goal.kind === "wishlist" ? "wishlist" : "local",
           targetThb: goalRes.goal.targetThb,
           raisedThb: goalRes.goal.raisedThb,
           deadline: goalRes.goal.deadline ?? null,
           showOnCounter: goalRes.goal.showOnCounter ?? true,
           showOnShare: goalRes.goal.showOnShare ?? true,
         });
-      } else {
-        // A resolved fetch that found no active goal (never configured, or
-        // just auto-hidden by the "take the bar down" ending) means there's
-        // genuinely nothing to show — distinct from the pre-fetch loading
-        // window, where the static fallback above stays visible.
-        setGoal((g) => ({ ...g, showOnCounter: false }));
       }
+      // No else: a resolved fetch that found no active goal (never configured,
+      // or auto-hidden by the "take the bar down" ending) leaves the seed's
+      // showOnCounter: false in place, which is already the right answer.
     } catch {
-      /* leave the strip + static goal fallback in place on failure */
+      /* leave the strip in place on failure; the goal bar stays hidden */
+    } finally {
+      // Settled, not succeeded: the curtain waits for an answer, not a good one.
+      setSupportersSettled(true);
     }
   }, []);
 
@@ -619,9 +659,18 @@ export default function Page() {
           setFlowerLine(cfg.flowerLine);
           if (cfg.idleLines.length > 0) {
             setIdleLines(cfg.idleLines);
-            // The fallback's seed id won't exist in the live list — re-anchor
-            // onto it so the currently-shown line doesn't silently vanish.
-            setCurrentLineId((cur) => (cfg.idleLines.some((l) => l.id === cur) ? cur : cfg.idleLines[0].id));
+            // The first paint began with the static fallback. Re-select from
+            // the saved Voice lines as soon as config arrives, otherwise the
+            // fallback remains in the dialogue box until a guest clicks next
+            // or their supporter bucket resolves.
+            const liveTags: ConditionTag[] = [
+              timeTagForHour(guestHour),
+              ...(cfg.currentWeather ? [cfg.currentWeather] : []),
+              ...(guestTag ? [guestTag] : []),
+            ];
+            const initialLine = pickIdleLine(cfg.idleLines, liveTags);
+            setCurrentLineId(initialLine.id);
+            say(initialLine[lang]);
           }
           setTtsThreshold(cfg.ttsThresholdThb);
           setRealVoiceOn(cfg.realVoiceOn);
@@ -636,6 +685,8 @@ export default function Page() {
       }
     } catch {
       /* keep the static fallback config */
+    } finally {
+      setConfigSettled(true);
     }
   }, []);
 
@@ -643,6 +694,109 @@ export default function Page() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     loadMenuConfig();
   }, [loadMenuConfig]);
+
+  // Emotion portraits swap mid-interaction (picking a treat → smile, crossing
+  // the TTS threshold → sparkle), and each unseen face is otherwise a cold
+  // fetch from the assets bucket at the exact moment it should already be on
+  // screen — the swap visibly lags. Warm the whole set for the active device
+  // once the config lands, at low priority so it never competes with the
+  // portrait actually being painted (the visible URL dedupes against its own
+  // in-flight request rather than fetching twice). The refs are held so the
+  // decoded bitmaps aren't collected before they're needed.
+  //
+  // Backdrops are deliberately not preloaded: `scene` is pinned to the guest's
+  // local hour at mount, so the other two never render on this page load.
+  const preloadedPortraits = useRef<HTMLImageElement[]>([]);
+  useEffect(() => {
+    if (isMobile === null) return;
+    const set = isMobile ? emotionImages.mobile : emotionImages.desktop;
+    preloadedPortraits.current = (Object.values(set).filter(Boolean) as string[]).map((url) => {
+      const img = new Image();
+      img.decoding = "async";
+      img.setAttribute("fetchpriority", "low");
+      img.src = url;
+      return img;
+    });
+  }, [emotionImages, isMobile]);
+
+  // ── Boot curtain: fonts ───────────────────────────────────────────────────
+  // The pixel faces are self-hosted by next/font with display:swap, so without
+  // this the counter paints in a fallback and then re-flows into DotGothic /
+  // Silkscreen — the single most visible part of the old "snap".
+  useEffect(() => {
+    let cancelled = false;
+    const done = () => {
+      if (!cancelled) setFontsReady(true);
+    };
+    const t = setTimeout(done, BOOT_FONT_MS);
+    if (typeof document !== "undefined" && document.fonts) {
+      document.fonts.ready.then(done).catch(done);
+    } else {
+      done();
+    }
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, []);
+
+  // ── Boot curtain: artwork ─────────────────────────────────────────────────
+  // Only the two bitmaps this load will actually paint — the backdrop for the
+  // guest's local hour and the portrait for the opening emotion. The rest of
+  // the set is warmed at low priority by the preload effect above, behind the
+  // curtain rather than in front of it. A missing or slow asset resolves the
+  // same way an arriving one does; the dither fallback is a fine first paint.
+  useEffect(() => {
+    if (isMobile === null || !configSettled) return;
+    const urls = [
+      isMobile ? portraitImgMobile : portraitImgDesktop,
+      isMobile ? sceneImages.mobile[scene] : sceneImages.desktop[scene],
+    ].filter(Boolean) as string[];
+    if (urls.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setArtReady(true);
+      return;
+    }
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      setArtReady(true);
+    };
+    const t = setTimeout(finish, BOOT_ART_MS);
+    Promise.all(
+      urls.map(
+        (url) =>
+          new Promise<void>((resolve) => {
+            const img = new Image();
+            img.onload = () => resolve();
+            img.onerror = () => resolve();
+            img.src = url;
+          }),
+      ),
+    ).then(finish);
+    return () => clearTimeout(t);
+  }, [configSettled, isMobile, portraitImgMobile, portraitImgDesktop, sceneImages, scene]);
+
+  // ── Boot curtain: lift ────────────────────────────────────────────────────
+  const bootSteps: boolean[] = [isMobile !== null, fontsReady, configSettled && supportersSettled, artReady];
+  const bootReady = bootSteps.every(Boolean);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (bootReady) setBooted(true);
+  }, [bootReady]);
+  // The floor under everything: a guest never waits on the café's own plumbing
+  // for longer than this, whatever is still outstanding.
+  useEffect(() => {
+    const t = setTimeout(() => setBooted(true), BOOT_MAX_MS);
+    return () => clearTimeout(t);
+  }, []);
+  useEffect(() => {
+    if (!booted) return;
+    const t = setTimeout(() => setCurtainMounted(false), BOOT_FADE_MS);
+    return () => clearTimeout(t);
+  }, [booted]);
+  const curtain = curtainMounted ? <CafeCurtain lang={lang} steps={bootSteps} leaving={booted} /> : null;
 
   // 3-D Secure card return: the redirect reloads the page (wiping React state) and
   // comes back to /?pi=…. Rebuild from the `tip:${pi}` sessionStorage stash that
@@ -1154,19 +1308,54 @@ export default function Page() {
       setQrSaving(false);
     }
   }
-  const menuCols = "repeat(3, minmax(0,1fr))";
+  const menuCols = `repeat(${MENU_GRID_COLS}, minmax(0,1fr))`;
+
+  // Desktop goal-card placement. The menu grid is 3-up, so 1-6 treats fill two
+  // rows and the goal sits under the menu; the 7th treat opens a third row and
+  // the menu column overshoots the left rail (portrait + message box). Past
+  // that point the goal moves under the order slip, which is the shorter of the
+  // two right-hand columns, so the extra card costs no total height.
+  const goalBelowSlip = shownMenu.length > MENU_GRID_COLS * GOAL_UNDER_MENU_MAX_ROWS;
+  // `compact` is the under-the-slip variant: the same card on a tighter pitch,
+  // because that column has only the left rail's leftover height to spend.
+  const goalCardDesktop = (marginTop: number, compact = false) => (
+    <div style={{ display: "flex", flexDirection: "column", gap: compact ? 4 : 6, padding: compact ? "9px 12px" : "12px 14px", background: "#FBE3C4", border: "3px solid #9E4B54", boxShadow: "0 4px 0 #DBB79A", marginTop }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+        <span style={{ fontFamily: mono, fontSize: 9, letterSpacing: ".1em", color: "#9E4B54" }}>{c.goalLabel}</span>
+        <span style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+          {totalThb > 0 && <span style={{ fontFamily: mono, fontSize: 9, color: "#C4818F" }}>+{fmtDisplay(totalThb, cur)}</span>}
+          <span style={{ fontFamily: dot, fontSize: 16, lineHeight: 1, color: "#9E4B54" }}>{Math.round(goalPctShown)}%</span>
+        </span>
+      </div>
+      <div style={{ fontSize: 14.5, color: "#7A3F49" }}>{goal.label || c.goalItem}</div>
+      <div style={{ height: 10, background: "#FFF", border: "2px solid #9E4B54", padding: 1, display: "flex" }}>
+        <div style={{ height: "100%", flex: "none", background: "repeating-linear-gradient(90deg,#F4A9BD 0 6px,#EE93AB 6px 12px)", transition: "width .35s steps(8)", width: `${goalPct}%` }} />
+        <div className="anim-goalprev" style={{ height: "100%", flex: "none", width: `${previewPct}%`, background: "repeating-linear-gradient(90deg,#9E4B54 0 4px,rgba(158,75,84,.2) 4px 8px)", transition: "width .35s steps(8)" }} />
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontFamily: mono, fontSize: 9, color: "#9E4B54" }}>
+        <span>{baht(goal.raisedThb)}</span>
+        <span style={{ color: "#B07B6A" }}>{baht(goal.targetThb)}</span>
+      </div>
+      {goal.deadline && <div style={{ fontSize: 10.5, color: "#8E6B5B" }}>{c.goalUntil(fmtGoalDeadline(goal.deadline))}</div>}
+    </div>
+  );
   const stepLabel = screen === "counter" ? "1/3" : screen === "pay" ? "2/3" : "3/3";
 
   // Hold the plum background until the viewport class is known, so the server
   // render and first client paint agree (no desktop→mobile flash).
   if (isMobile === null) {
-    return <div style={{ position: "fixed", inset: 0, background: "#5F3A40" }} />;
+    return (
+      <div style={{ position: "fixed", inset: 0, background: "#5F3A40" }}>
+        {curtain}
+      </div>
+    );
   }
 
   // ── Mobile shell (Whispering Rain Cafe Mobile.dc.html) ──────────────────────
   if (isMobile) {
     return (
       <div style={{ position: "fixed", inset: 0, background: "#5F3A40", display: "flex", justifyContent: "center" }}>
+        {curtain}
         <div style={{ width: "100%", maxWidth: 460, height: "100dvh", display: "flex", flexDirection: "column", overflow: "hidden", background: "#FDF5E4", boxShadow: "0 0 0 3px #C4818F" }}>
           {/* sticky top bar */}
           <div style={{ flex: "none", display: "flex", flexDirection: "column", gap: 10, padding: "10px 12px 12px", background: "#FDF5E4", borderBottom: "3px solid #9E4B54" }}>
@@ -1339,7 +1528,7 @@ export default function Page() {
                         </div>
                         <div style={{ display: "flex", justifyContent: "space-between", marginTop: 5, fontFamily: mono, fontSize: 9, color: "#9E4B54" }}>
                           <span>{baht(goal.raisedThb)}</span>
-                          <span style={{ color: "#B07B6A" }}>{Math.round(goalPct)}% / {baht(goal.targetThb)}</span>
+                          <span style={{ color: "#B07B6A" }}>{Math.round(goalPctShown)}% / {baht(goal.targetThb)}</span>
                         </div>
                         {goal.deadline && <div style={{ marginTop: 4, fontSize: 10.5, color: "#8E6B5B" }}>{c.goalUntil(fmtGoalDeadline(goal.deadline))}</div>}
                       </div>
@@ -1419,11 +1608,11 @@ export default function Page() {
                       {/* padding is the real gap to the border — it lives on this
                           box, but clipping the zoomed QR happens one level in, so
                           the crop can't bleed back out over that gap. */}
-                      <div style={{ flex: "none", width: "calc(min(72vw, 260px) * 0.8)", aspectRatio: "1 / 1", padding: 10, border: "3px solid #9E4B54", background: "#FFF", display: "grid", placeItems: "center" }}>
+                      <div style={{ flex: "none", width: "calc(min(72vw, 260px) * 0.8)", aspectRatio: "1 / 1", border: "3px solid #9E4B54", background: "#FFF", display: "grid", placeItems: "center" }}>
                         <div style={{ width: "100%", height: "100%", overflow: "hidden" }}>
                           {qrImageUrl ? (
                             // eslint-disable-next-line @next/next/no-img-element
-                            <img src={qrImageUrl} alt="PromptPay QR" style={{ width: "100%", height: "100%", transform: "scale(1.41)" }} />
+                            <img src={qrImageUrl} alt="PromptPay QR" style={{ width: "100%", height: "100%" }} />
                           ) : (
                             <div style={{ width: "100%", height: "100%", backgroundImage: "repeating-conic-gradient(#7A3F49 0% 25%, #FFF 0% 50%)", backgroundSize: "16px 16px" }} />
                           )}
@@ -1586,6 +1775,7 @@ export default function Page() {
 
   return (
     <div style={{ position: "fixed", inset: 0, overflow: "auto", background: "#5F3A40" }}>
+      {curtain}
       <section style={{ minHeight: "100%", padding: 40, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", gap: 18, minWidth: 1260 }}>
         <div style={{ position: "relative", width: 1180, border: "5px solid #C4818F", background: "#F7E7CB", padding: 16, boxShadow: "0 0 0 4px #7A3F49, 0 16px 34px rgba(0,0,0,.3)", display: "flex", flexDirection: "column", gap: 14 }}>
           {/* header */}
@@ -1670,100 +1860,83 @@ export default function Page() {
                       })}
                     </div>
 
-                    {/* café goal card */}
-                    {goal.showOnCounter && (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "12px 14px", background: "#FBE3C4", border: "3px solid #9E4B54", boxShadow: "0 4px 0 #DBB79A", marginTop: 8 }}>
-                        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
-                          <span style={{ fontFamily: mono, fontSize: 9, letterSpacing: ".1em", color: "#9E4B54" }}>{c.goalLabel}</span>
-                          <span style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                            {totalThb > 0 && <span style={{ fontFamily: mono, fontSize: 9, color: "#C4818F" }}>+{fmtDisplay(totalThb, cur)}</span>}
-                            <span style={{ fontFamily: dot, fontSize: 16, lineHeight: 1, color: "#9E4B54" }}>{Math.round(goalPct)}%</span>
-                          </span>
-                        </div>
-                        <div style={{ fontSize: 14.5, color: "#7A3F49" }}>{goal.label || c.goalItem}</div>
-                        <div style={{ height: 10, background: "#FFF", border: "2px solid #9E4B54", padding: 1, display: "flex" }}>
-                          <div style={{ height: "100%", flex: "none", background: "repeating-linear-gradient(90deg,#F4A9BD 0 6px,#EE93AB 6px 12px)", transition: "width .35s steps(8)", width: `${goalPct}%` }} />
-                          <div className="anim-goalprev" style={{ height: "100%", flex: "none", width: `${previewPct}%`, background: "repeating-linear-gradient(90deg,#9E4B54 0 4px,rgba(158,75,84,.2) 4px 8px)", transition: "width .35s steps(8)" }} />
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", fontFamily: mono, fontSize: 9, color: "#9E4B54" }}>
-                          <span>{baht(goal.raisedThb)}</span>
-                          <span style={{ color: "#B07B6A" }}>{baht(goal.targetThb)}</span>
-                        </div>
-                        {goal.deadline && <div style={{ fontSize: 10.5, color: "#8E6B5B" }}>{c.goalUntil(fmtGoalDeadline(goal.deadline))}</div>}
-                      </div>
-                    )}
+                    {/* café goal card — under the menu only while it fits (see goalBelowSlip) */}
+                    {goal.showOnCounter && !goalBelowSlip && goalCardDesktop(8)}
                   </div>
 
-                  {/* order slip */}
-                  <div style={{ flex: "0 0 330px", minWidth: 0, alignSelf: "flex-start", border: "3px solid #9E4B54", background: "#FDF5E4", padding: "22px 14px", display: "flex", flexDirection: "column", gap: 11 }}>
-                    <div style={{ fontFamily: mono, fontSize: 16, letterSpacing: ".1em", color: "#B07B6A", textAlign: "center" }}>{c.slipLabel}</div>
+                  {/* order slip (+ the goal card when the menu grew too tall for it) */}
+                  <div style={{ flex: "0 0 330px", minWidth: 0, alignSelf: "flex-start", display: "flex", flexDirection: "column" }}>
+                    <div style={{ border: "3px solid #9E4B54", background: "#FDF5E4", padding: "22px 14px", display: "flex", flexDirection: "column", gap: 11 }}>
+                      <div style={{ fontFamily: mono, fontSize: 16, letterSpacing: ".1em", color: "#B07B6A", textAlign: "center" }}>{c.slipLabel}</div>
 
-                    {/* name + anonymous */}
-                    <div>
-                      <div style={{ fontFamily: mono, fontSize: 11, letterSpacing: ".1em", color: "#9A6656", marginBottom: 5 }}>{c.nameLabel}</div>
-                      <input value={anon ? "" : name} disabled={anon} onChange={(e) => setName(e.target.value)} onFocus={() => setNameFocus(true)} onBlur={() => setNameFocus(false)} maxLength={30} autoComplete="username" placeholder={c.anonName}
-                        style={{ width: "100%", padding: "10px 12px", border: `3px solid ${nameFocus ? "#9E4B54" : "#DBB79A"}`, background: anon ? "#F1E6D3" : "#FFF", fontSize: 14, color: "#7A3F49", outline: "none" }} />
-                      <div style={{ display: "flex", alignItems: "center", gap: 2, marginTop: 8 }}>
-                        <button onClick={() => setAnon(!anon)} role="checkbox" aria-checked={anon}
-                          style={{ display: "flex", alignItems: "flex-start", gap: 8, border: "none", background: "none", padding: "5px 2px", cursor: "pointer", textAlign: "left", color: "#7A3F49", fontSize: 12, width: "auto" }}>
-                          <span style={{ flex: "none", width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", border: "3px solid #9E4B54", background: anon ? "#FDD3E0" : "#FFF" }}>
-                            {anon && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9E4B54" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>}
-                          </span>
-                          <span style={{ lineHeight: "20px" }}>{c.anonLabel}</span>
-                        </button>
-                        <Info open={anonTip} setOpen={setAnonTip} text={c.anonTip} />
-                      </div>
-                    </div>
-
-                    {/* amount */}
-                    <div>
-                      <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: ".1em", color: "#9A6656", marginBottom: 5 }}>{c.amountLabel}</div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", border: `3px solid ${amtErr ? "#C4646F" : amtFocus || !itemId ? "#9E4B54" : "#DBB79A"}`, background: "#FFF" }}>
-                        <span style={{ fontFamily: dot, fontSize: 18, color: "#9E4B54" }}>{symbol}</span>
-                        <input value={amount} onChange={(e) => handleAmount(e.target.value)} onFocus={() => setAmtFocus(true)} onBlur={() => setAmtFocus(false)} inputMode="decimal" placeholder={c.customPlaceholder}
-                          style={{ flex: 1, minWidth: 0, border: "none", background: "none", outline: "none", fontFamily: dot, fontSize: 18, color: "#7A3F49" }} />
-                      </div>
-                      {amtErr && <div style={{ ...errBlock, marginTop: 6 }}>{amtErrMsg}</div>}
-                      {/* TTS meter */}
-                      {realVoiceOn && (
-                        <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 8 }}>
-                          <div style={{ flex: 1, height: 10, border: "2px solid #DBB79A", background: "#EEDCBE", padding: 1 }}>
-                            <div style={{ height: "100%", background: "repeating-linear-gradient(90deg,#C9A2D6 0 5px,#B98FC8 5px 10px)", transition: "width .35s steps(8)", width: `${ttsPct}%` }} />
-                          </div>
-                          <span style={{ flex: "none", fontSize: 11, color: ttsUnlocked ? "#7A4A94" : "#8E6B5B" }}>
-                            {ttsUnlocked ? c.ttsUnlocked : c.ttsToGo(fmtDisplay(Math.max(0, ttsThreshold - totalThb), cur))}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* note */}
-                    <div>
-                      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, marginBottom: 5 }}>
-                        <span style={{ fontFamily: mono, fontSize: 11, letterSpacing: ".1em", color: "#9A6656" }}>{c.noteLabel}</span>
-                        <span style={{ fontFamily: mono, fontSize: 9, color: "#B07B6A" }}>{message.length}/250</span>
-                      </div>
-                      <textarea value={message} onChange={(e) => setMessage(e.target.value.slice(0, 250))} onFocus={() => setMsgFocus(true)} onBlur={() => setMsgFocus(false)} rows={3} placeholder={c.notePlaceholder}
-                        style={{ width: "100%", padding: "10px 12px", border: `3px solid ${msgFocus ? "#9E4B54" : "#DBB79A"}`, background: "#FFF", fontSize: 13.5, lineHeight: 1.6, color: "#7A3F49", outline: "none", resize: "none" }} />
-                      {sealedAllowed && (
+                      {/* name + anonymous */}
+                      <div>
+                        <div style={{ fontFamily: mono, fontSize: 11, letterSpacing: ".1em", color: "#9A6656", marginBottom: 5 }}>{c.nameLabel}</div>
+                        <input value={anon ? "" : name} disabled={anon} onChange={(e) => setName(e.target.value)} onFocus={() => setNameFocus(true)} onBlur={() => setNameFocus(false)} maxLength={30} autoComplete="username" placeholder={c.anonName}
+                          style={{ width: "100%", padding: "10px 12px", border: `3px solid ${nameFocus ? "#9E4B54" : "#DBB79A"}`, background: anon ? "#F1E6D3" : "#FFF", fontSize: 14, color: "#7A3F49", outline: "none" }} />
                         <div style={{ display: "flex", alignItems: "center", gap: 2, marginTop: 8 }}>
-                          <button onClick={() => setPriv((p) => !p)} role="checkbox" aria-checked={priv}
+                          <button onClick={() => setAnon(!anon)} role="checkbox" aria-checked={anon}
                             style={{ display: "flex", alignItems: "flex-start", gap: 8, border: "none", background: "none", padding: "5px 2px", cursor: "pointer", textAlign: "left", color: "#7A3F49", fontSize: 12, width: "auto" }}>
-                            <span style={{ flex: "none", width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", border: "3px solid #9E4B54", background: priv ? "#FDD3E0" : "#FFF" }}>
-                              {priv && (
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9E4B54" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
-                              )}
+                            <span style={{ flex: "none", width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", border: "3px solid #9E4B54", background: anon ? "#FDD3E0" : "#FFF" }}>
+                              {anon && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9E4B54" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>}
                             </span>
-                            <span style={{ lineHeight: "20px" }}>{c.privLabel}</span>
+                            <span style={{ lineHeight: "20px" }}>{c.anonLabel}</span>
                           </button>
-                          <Info open={privTip} setOpen={setPrivTip} text={c.privTip} />
+                          <Info open={anonTip} setOpen={setAnonTip} text={c.anonTip} />
                         </div>
-                      )}
-                    </div>
+                      </div>
 
-                    <button onClick={goCheckout} style={ctaBtn}>
-                      {totalThb > 0 ? c.cta(totalDisplayLabel) : c.ctaEmpty}
-                    </button>
+                      {/* amount */}
+                      <div>
+                        <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: ".1em", color: "#9A6656", marginBottom: 5 }}>{c.amountLabel}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", border: `3px solid ${amtErr ? "#C4646F" : amtFocus || !itemId ? "#9E4B54" : "#DBB79A"}`, background: "#FFF" }}>
+                          <span style={{ fontFamily: dot, fontSize: 18, color: "#9E4B54" }}>{symbol}</span>
+                          <input value={amount} onChange={(e) => handleAmount(e.target.value)} onFocus={() => setAmtFocus(true)} onBlur={() => setAmtFocus(false)} inputMode="decimal" placeholder={c.customPlaceholder}
+                            style={{ flex: 1, minWidth: 0, border: "none", background: "none", outline: "none", fontFamily: dot, fontSize: 18, color: "#7A3F49" }} />
+                        </div>
+                        {amtErr && <div style={{ ...errBlock, marginTop: 6 }}>{amtErrMsg}</div>}
+                        {/* TTS meter */}
+                        {realVoiceOn && (
+                          <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 8 }}>
+                            <div style={{ flex: 1, height: 10, border: "2px solid #DBB79A", background: "#EEDCBE", padding: 1 }}>
+                              <div style={{ height: "100%", background: "repeating-linear-gradient(90deg,#C9A2D6 0 5px,#B98FC8 5px 10px)", transition: "width .35s steps(8)", width: `${ttsPct}%` }} />
+                            </div>
+                            <span style={{ flex: "none", fontSize: 11, color: ttsUnlocked ? "#7A4A94" : "#8E6B5B" }}>
+                              {ttsUnlocked ? c.ttsUnlocked : c.ttsToGo(fmtDisplay(Math.max(0, ttsThreshold - totalThb), cur))}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* note */}
+                      <div>
+                        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, marginBottom: 5 }}>
+                          <span style={{ fontFamily: mono, fontSize: 11, letterSpacing: ".1em", color: "#9A6656" }}>{c.noteLabel}</span>
+                          <span style={{ fontFamily: mono, fontSize: 9, color: "#B07B6A" }}>{message.length}/250</span>
+                        </div>
+                        <textarea value={message} onChange={(e) => setMessage(e.target.value.slice(0, 250))} onFocus={() => setMsgFocus(true)} onBlur={() => setMsgFocus(false)} rows={3} placeholder={c.notePlaceholder}
+                          style={{ width: "100%", padding: "10px 12px", border: `3px solid ${msgFocus ? "#9E4B54" : "#DBB79A"}`, background: "#FFF", fontSize: 13.5, lineHeight: 1.6, color: "#7A3F49", outline: "none", resize: "none" }} />
+                        {sealedAllowed && (
+                          <div style={{ display: "flex", alignItems: "center", gap: 2, marginTop: 8 }}>
+                            <button onClick={() => setPriv((p) => !p)} role="checkbox" aria-checked={priv}
+                              style={{ display: "flex", alignItems: "flex-start", gap: 8, border: "none", background: "none", padding: "5px 2px", cursor: "pointer", textAlign: "left", color: "#7A3F49", fontSize: 12, width: "auto" }}>
+                              <span style={{ flex: "none", width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", border: "3px solid #9E4B54", background: priv ? "#FDD3E0" : "#FFF" }}>
+                                {priv && (
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9E4B54" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                                )}
+                              </span>
+                              <span style={{ lineHeight: "20px" }}>{c.privLabel}</span>
+                            </button>
+                            <Info open={privTip} setOpen={setPrivTip} text={c.privTip} />
+                          </div>
+                        )}
+                      </div>
+
+                      <button onClick={goCheckout} style={ctaBtn}>
+                        {totalThb > 0 ? c.cta(totalDisplayLabel) : c.ctaEmpty}
+                      </button>
+                    </div>
+                    {goal.showOnCounter && goalBelowSlip && goalCardDesktop(10, true)}
                   </div>
                 </div>
               )}
@@ -1814,10 +1987,10 @@ export default function Page() {
                       <>
                         <div style={{ position: "relative", padding: 14, border: "3px solid #DBB79A", background: "#FFF" }}>
                           <div style={{ display: "flex", gap: 16, alignItems: "center", filter: emailOk && qrImageUrl && qrSecondsLeft !== 0 ? "none" : "blur(7px)", opacity: emailOk && qrImageUrl && qrSecondsLeft !== 0 ? 1 : 0.55, transition: "filter .25s steps(4),opacity .25s steps(4)" }}>
-                            <div style={{ flex: "none", width: 139, height: 139, padding: 8, border: "3px solid #9E4B54", background: "#FFF", display: "grid", placeItems: "center", overflow: "hidden" }}>
+                            <div style={{ flex: "none", width: 139, height: 139, border: "3px solid #9E4B54", background: "#FFF", display: "grid", placeItems: "center", overflow: "hidden" }}>
                               {qrImageUrl ? (
                                 // eslint-disable-next-line @next/next/no-img-element
-                                <img src={qrImageUrl} alt="PromptPay QR" style={{ width: "100%", height: "100%", transform: "scale(1.41)" }} />
+                                <img src={qrImageUrl} alt="PromptPay QR" style={{ width: "100%", height: "100%"}} />
                               ) : (
                                 <div style={{ width: "100%", height: "100%", backgroundImage: "repeating-conic-gradient(#7A3F49 0% 25%, #FFF 0% 50%)", backgroundSize: "16px 16px" }} />
                               )}
@@ -2042,6 +2215,61 @@ export default function Page() {
           )}
         </div>
       </section>
+    </div>
+  );
+}
+
+// ── boot curtain ────────────────────────────────────────────────────────────
+// Shown over the counter until it is genuinely finished assembling (see the
+// readiness effects in Cafe). The plum ground is the same colour the pre-mount
+// paint already used, so the very first frame the browser draws is the curtain
+// itself — nothing flashes on the way in, and the counter crossfades in behind
+// it on the way out. Styles live in globals.css under ".boot-curtain".
+function CafeCurtain({ lang, steps, leaving }: { lang: Lang; steps: boolean[]; leaving: boolean }) {
+  const c = CAFE_COPY[lang];
+  // Held back a beat: a warm load finishes inside BOOT_SHOW_MS and the guest
+  // sees a plain plum frame instead of a loading state that blinks at them.
+  // If the lift starts before the timer fires the cleanup cancels it, so the
+  // card never appears just to fade straight back out; once it has appeared it
+  // stays for the fade.
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (leaving) return;
+    const t = setTimeout(() => setVisible(true), BOOT_SHOW_MS);
+    return () => clearTimeout(t);
+  }, [leaving]);
+
+  // The first unfinished milestone is what the café is busy with right now;
+  // -1 means everything landed and the curtain is already on its way up.
+  const pending = steps.findIndex((done) => !done);
+  const caption = pending === -1 ? c.bootReady : c.bootSteps[pending] ?? c.bootReady;
+
+  return (
+    <div className="boot-curtain" data-leaving={leaving} role="status" aria-live="polite" aria-busy={!leaving}>
+      <div className="boot-inner" data-show={visible}>
+        {/* steam — three stepped columns, disabled under prefers-reduced-motion
+            with the rest of the pixel motion vocabulary in globals.css */}
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 7, height: 24 }} aria-hidden>
+          {[0, 1, 2].map((i) => (
+            <span key={i} className="anim-steam" style={{ width: 6, height: 15, background: "#C4818F", opacity: 0, animationDelay: `${i * 0.45}s` }} />
+          ))}
+        </div>
+        {/* cup */}
+        <div style={{ position: "relative", width: 64 }} aria-hidden>
+          <div style={{ height: 44, border: "4px solid #9E4B54", background: "#FDF5E4", boxShadow: "6px 6px 0 rgba(0,0,0,.28)" }}>
+            <div style={{ height: 9, background: "#C4818F" }} />
+          </div>
+          <div style={{ position: "absolute", top: 10, right: -16, width: 16, height: 20, borderTop: "4px solid #9E4B54", borderRight: "4px solid #9E4B54", borderBottom: "4px solid #9E4B54" }} />
+          <div style={{ width: 80, height: 8, marginLeft: -8, marginTop: 4, background: "#C4818F", boxShadow: "4px 4px 0 rgba(0,0,0,.28)" }} />
+        </div>
+        <div style={{ fontFamily: dot, fontSize: 18, lineHeight: 1.2, color: "#FFEFDA", textAlign: "center" }}>{c.bootTitle}</div>
+        <div className="boot-bar">
+          {steps.map((done, i) => (
+            <span key={i} className="boot-seg" data-done={done} />
+          ))}
+        </div>
+        <div className="boot-caption">{caption}</div>
+      </div>
     </div>
   );
 }
