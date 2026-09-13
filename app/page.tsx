@@ -1261,11 +1261,11 @@ export default function Page() {
       ctx.lineWidth = 6;
       ctx.strokeStyle = "#9E4B54";
       ctx.strokeRect(qrX + 3, y + 3, QR_PANEL - 6, QR_PANEL - 6);
-      const cropFrac = 1 / 1.41;
+      const cropFrac = 1 / 1.2;
       const marginFrac = (1 - cropFrac) / 2;
       ctx.drawImage(
         bitmap,
-        bitmap.width * marginFrac, bitmap.height * marginFrac, bitmap.width * cropFrac, bitmap.height * cropFrac,
+        0, 0, bitmap.width, bitmap.height,
         qrX + QR_PAD, y + QR_PAD, QR_SIZE, QR_SIZE
       );
       y += QR_PANEL + GAP_AFTER_QR;
@@ -1612,7 +1612,7 @@ export default function Page() {
                         <div style={{ width: "100%", height: "100%", overflow: "hidden" }}>
                           {qrImageUrl ? (
                             // eslint-disable-next-line @next/next/no-img-element
-                            <img src={qrImageUrl} alt="PromptPay QR" style={{ width: "100%", height: "100%" }} />
+                            <img src={qrImageUrl} alt="PromptPay QR" style={{ width: "100%", height: "100%", transform: "scale(1.2)" }} />
                           ) : (
                             <div style={{ width: "100%", height: "100%", backgroundImage: "repeating-conic-gradient(#7A3F49 0% 25%, #FFF 0% 50%)", backgroundSize: "16px 16px" }} />
                           )}
@@ -1990,7 +1990,7 @@ export default function Page() {
                             <div style={{ flex: "none", width: 139, height: 139, border: "3px solid #9E4B54", background: "#FFF", display: "grid", placeItems: "center", overflow: "hidden" }}>
                               {qrImageUrl ? (
                                 // eslint-disable-next-line @next/next/no-img-element
-                                <img src={qrImageUrl} alt="PromptPay QR" style={{ width: "100%", height: "100%"}} />
+                                <img src={qrImageUrl} alt="PromptPay QR" style={{ width: "100%", height: "100%", transform: "scale(1.2)" }} />
                               ) : (
                                 <div style={{ width: "100%", height: "100%", backgroundImage: "repeating-conic-gradient(#7A3F49 0% 25%, #FFF 0% 50%)", backgroundSize: "16px 16px" }} />
                               )}
